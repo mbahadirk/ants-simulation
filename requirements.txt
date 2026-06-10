@@ -1,0 +1,7 @@
+# Zorunlu
+pygame>=2.5
+numpy>=1.24
+
+# Ekran kaydi icin (biri yeterli; yoksa PNG kare dizisi olarak kaydeder)
+opencv-python>=4.8   # .mp4 kaydi (onerilen)
+# imageio[ffmpeg]>=2.31  # alternatif .mp4 backend
