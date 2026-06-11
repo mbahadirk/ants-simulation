@@ -66,7 +66,15 @@ class Recorder:
             self._out_path = path
         elif _HAS_IMAGEIO:
             path = os.path.join(C.RECORD_DIR, f"ant_{stamp}.mp4")
-            self._writer = imageio.get_writer(path, fps=C.RECORD_FPS, macro_block_size=None)
+            # yuksek kalite: libx264 + dusuk CRF (net kayit)
+            try:
+                self._writer = imageio.get_writer(
+                    path, fps=C.RECORD_FPS, codec="libx264",
+                    quality=9, macro_block_size=None, pixelformat="yuv420p",
+                    output_params=["-crf", "16", "-preset", "medium"],
+                )
+            except Exception:
+                self._writer = imageio.get_writer(path, fps=C.RECORD_FPS, macro_block_size=None)
             self.backend = "imageio"
             self._out_path = path
         else:

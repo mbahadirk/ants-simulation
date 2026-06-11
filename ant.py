@@ -2,7 +2,7 @@
 Karinca varligi.
 
 Her karincanin: konumu, yon acisi (heading), enerjisi, yasi, yasam suresi,
-bir beyni (LSTMPolicy) ve kisa menzilli isin sensorleri vardir.
+bir beyni (LSTMPolicy) ve onundeki 180 derecelik sektor tabanli gorusu vardir.
 
 Sensor -> beyin (forward) -> aksiyon (ileri/geri/sol/sag/bekle) -> hareket.
 Hareket sirasinda tas/engel gecilemez; besin alinir, yuvaya teslim edilir.
@@ -13,18 +13,9 @@ import numpy as np
 import config as C
 from neural_network import LSTMPolicy
 
-# Sensorde nesne tipi -> one-hot index eslemesi
-# 0:food 1:stone 2:obstacle 3:ant 4:nest
-_OBJ_INDEX = {
-    C.FOOD: 0,
-    C.STONE: 1,
-    C.OBSTACLE: 2,
-    C.NEST: 4,
-}
-ANT_HIT = 3  # baska karinca algilandiginda kullanilan one-hot index
-
-# Isin acilarinin (heading'e gore) onceden hesaplanmis ofsetleri
-_RAY_OFFSETS = np.linspace(-C.VISION_FOV / 2.0, C.VISION_FOV / 2.0, C.N_RAYS)
+# Nesne tipi -> sektor one-hot indeksi (0:besin 1:tas 2:engel 3:karinca 4:yuva)
+_VIS_OBJ_INDEX = {C.FOOD: 0, C.STONE: 1, C.OBSTACLE: 2, C.NEST: 4}
+_ANT_OBJ_INDEX = 3
 
 
 def _wrap_angle(a):
@@ -55,10 +46,20 @@ class Ant:
         # istatistik / ureme icin
         self.food_delivered = 0
         self.food_found = 0
+        self.wall_hits = 0
+        self.idle_steps = 0
 
-        # debug icin son sensor okumasi: (angle, dist, obj_index_or_None)
-        self.last_rays = []
+        # odul sekillendirme (reward shaping)
+        self.fitness_bonus = 0.0       # ilerleme odullerinin toplami
+        self.min_home_dist = None      # tasirken yuvaya ulasilan en kucuk mesafe
+        self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
+        self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
+
+        # debug icin son gorulen nesneler: (tip, x, y, dist)
+        self.last_seen = []
         self.last_action = C.ACTION_NONE
+        self.last_odor = 0.0       # son algilanan besin kokusu (max anten)
+        self.last_food_ph = 0.0    # son algilanan food feromonu (max anten)
 
         # benzersiz bir renk (debug'da ayirt etmek icin) -> genoma bagli
         g = self.brain.get_genome()
@@ -71,57 +72,93 @@ class Ant:
 
     def fitness(self):
         return (self.food_delivered * C.FITNESS_DELIVER_W
-                + self.food_found * C.FITNESS_FIND_W)
+                + self.food_found * C.FITNESS_FIND_W
+                + self.fitness_bonus)
 
     # -------------------------------------------------------------- sensorler
     def sense(self, world, neighbors):
         """
-        Kisa menzilli isinlarla cevreyi algilar.
-        world: tas/engel/besin/yuva icin raycast.
-        neighbors: yakindaki diger karincalar (isin uzerine duserse 'ant').
-        Donus: INPUT_SIZE uzunlugunda numpy vektor.
+        DAIRESEL gorus: karincanin etrafindaki VISION_RANGE yaricapli daire
+        icindeki nesneleri gorur. Her nesne tipi (besin/tas/engel/karinca/yuva)
+        icin gorus hatti ACIK (onunde duvar olmayan) EN YAKIN ornek bulunur.
+        Duvar arkasindaki nesne GORUNMEZ. Her tip icin girdi:
+        [var_mi, yakinlik(0..1), sin(rel_aci), cos(rel_aci)].
         """
-        feats = np.zeros(C.N_RAYS * C.RAY_FEATURES, dtype=np.float32)
-        self.last_rays = []
-
-        ray_dist = np.empty(C.N_RAYS, dtype=np.float32)
-        ray_idx = [None] * C.N_RAYS  # one-hot index ya da None
-
-        for k, off in enumerate(_RAY_OFFSETS):
-            ang = self.heading + off
-            obj_type, dist = world.cast_ray(self.x, self.y, ang, C.VISION_RANGE)
-            ray_dist[k] = dist
-            if obj_type in _OBJ_INDEX and dist < C.VISION_RANGE:
-                ray_idx[k] = _OBJ_INDEX[obj_type]
-
-        # diger karincalari isinlara yerlestir
+        cs = C.CELL_SIZE
+        rng = C.VISION_RANGE
         half_fov = C.VISION_FOV / 2.0
-        bin_w = C.VISION_FOV / max(1, (C.N_RAYS - 1))
+        bin_w = C.VISION_FOV / C.N_SECTORS
+        ns = C.N_SECTORS
+
+        # her sektorde: en yakin nesnenin mesafesi, one-hot indeksi, konumu
+        sect_dist = [rng] * ns
+        sect_idx = [None] * ns
+        sect_pos = [None] * ns
+
+        r0 = max(0, int((self.y - rng) // cs))
+        r1 = min(C.GRID_H - 1, int((self.y + rng) // cs))
+        c0 = max(0, int((self.x - rng) // cs))
+        c1 = min(C.GRID_W - 1, int((self.x + rng) // cs))
+
+        grid = world.grid
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                oi = _VIS_OBJ_INDEX.get(int(grid[r, c]))
+                if oi is None:        # EMPTY ya da gorulmeyen tip
+                    continue
+                # hucrenin karincaya en yakin noktasi -> mesafe
+                px = max(c * cs, min(self.x, (c + 1) * cs))
+                py = max(r * cs, min(self.y, (r + 1) * cs))
+                dist = np.hypot(px - self.x, py - self.y)
+                if dist > rng:
+                    continue
+                # hucre merkezine gore yon (heading'e gore)
+                cx = (c + 0.5) * cs
+                cy = (r + 0.5) * cs
+                rel = _wrap_angle(np.arctan2(cy - self.y, cx - self.x) - self.heading)
+                if abs(rel) > half_fov:        # 180 derece disinda
+                    continue
+                k = int((rel + half_fov) / bin_w)
+                if k >= ns:
+                    k = ns - 1
+                # bu yonde daha yakin nesne varsa onu gormeye devam (okluzyon)
+                if dist < sect_dist[k]:
+                    sect_dist[k] = dist
+                    sect_idx[k] = oi
+                    sect_pos[k] = (cx, cy)
+
+        # diger karincalar
         for other in neighbors:
             if other is self or not other.alive:
                 continue
             dx = other.x - self.x
             dy = other.y - self.y
             dist = np.hypot(dx, dy)
-            if dist > C.VISION_RANGE or dist < 1e-3:
+            if dist > rng or dist < 1e-3:
                 continue
             rel = _wrap_angle(np.arctan2(dy, dx) - self.heading)
             if abs(rel) > half_fov:
                 continue
-            k = int(round((rel + half_fov) / bin_w))
-            k = max(0, min(C.N_RAYS - 1, k))
-            if dist < ray_dist[k]:
-                ray_dist[k] = dist
-                ray_idx[k] = ANT_HIT
+            k = int((rel + half_fov) / bin_w)
+            if k >= ns:
+                k = ns - 1
+            if dist < sect_dist[k]:
+                sect_dist[k] = dist
+                sect_idx[k] = _ANT_OBJ_INDEX
+                sect_pos[k] = (other.x, other.y)
 
-        # ozellik vektorunu doldur + debug isinlarini kaydet
-        for k in range(C.N_RAYS):
-            base = k * C.RAY_FEATURES
-            feats[base] = ray_dist[k] / C.VISION_RANGE  # mesafe (0..1)
-            if ray_idx[k] is not None:
-                feats[base + 1 + ray_idx[k]] = 1.0
-            ang = self.heading + _RAY_OFFSETS[k]
-            self.last_rays.append((ang, float(ray_dist[k]), ray_idx[k]))
+        # gorus vektoru + debug bilgisi
+        vis = np.zeros(C.VISION_INPUTS, dtype=np.float32)
+        self.last_seen = []
+        for k in range(ns):
+            if sect_idx[k] is None:
+                continue
+            base = k * C.SECTOR_FEATURES
+            vis[base] = 1.0 - sect_dist[k] / rng      # yakinlik (1=cok yakin)
+            vis[base + 1 + sect_idx[k]] = 1.0
+            self.last_seen.append((sect_idx[k], sect_pos[k][0], sect_pos[k][1], sect_dist[k]))
+
+        feats = vis
 
         # --- homing (yuva yonu, path integration) ---
         ndx = world.nest_pos[0] - self.x
@@ -146,11 +183,22 @@ class Ant:
             ph[i + 1] = world.sample(C.PH_FOOD, px, py)
             i += 2
 
+        # --- besin kokusu antenleri (sol/orta/sag) ---
+        odor = np.zeros(C.ODOR_INPUTS, dtype=np.float32)
+        for j, off in enumerate(C.PH_SAMPLE_ANGLES):
+            ang = self.heading + off
+            px = self.x + np.cos(ang) * C.ODOR_SAMPLE_DIST
+            py = self.y + np.sin(ang) * C.ODOR_SAMPLE_DIST
+            odor[j] = world.sample_odor(px, py)
+        # debug paneli icin: karincanin gercekten algiladigi degerler
+        self.last_odor = float(odor.max())
+        self.last_food_ph = float(ph[1::2].max()) if C.PHEROMONE_INPUTS else 0.0
+
         extra = np.array([
             1.0 if self.carrying else 0.0,
             self.energy,
         ], dtype=np.float32)
-        return np.concatenate([feats, homing, ph, extra])
+        return np.concatenate([feats, homing, ph, odor, extra])
 
     # --------------------------------------------------------------- guncelle
     def update(self, dt, world, neighbors):
@@ -167,17 +215,32 @@ class Ant:
         self.last_action = action
 
         # --- hareket ---
+        ox, oy = self.x, self.y
+        moved = True
         if action == C.ACTION_LEFT:
             self.heading -= C.TURN_SPEED * dt
         elif action == C.ACTION_RIGHT:
             self.heading += C.TURN_SPEED * dt
         elif action == C.ACTION_FORWARD:
-            self._try_move(C.MOVE_SPEED * dt, world)
+            moved = self._try_move(C.MOVE_SPEED * dt, world)
         elif action == C.ACTION_BACK:
-            self._try_move(-C.BACK_SPEED * dt, world)
+            moved = self._try_move(-C.BACK_SPEED * dt, world)
         # ACTION_NONE -> hareket yok
 
         self.heading = _wrap_angle(self.heading)
+        disp = np.hypot(self.x - ox, self.y - oy)  # bu adimda katedilen mesafe
+
+        # --- cezalar (enerji + fitness) ---
+        # duvara/tasa carpip ilerleyemediyse ceza
+        if action in (C.ACTION_FORWARD, C.ACTION_BACK) and not moved:
+            self.energy -= C.WALL_PENALTY_RATE * dt
+            self.fitness_bonus -= C.WALL_FIT_PENALTY
+            self.wall_hits += 1
+        # 'bekle' (sabit durma) cezasi
+        if action == C.ACTION_NONE:
+            self.energy -= C.IDLE_PENALTY_RATE * dt
+            self.fitness_bonus -= C.IDLE_FIT_PENALTY
+            self.idle_steps += 1
 
         # --- besin alma ---
         if not self.carrying and world.take_food(self.x, self.y):
@@ -185,6 +248,10 @@ class Ant:
             self.energy = C.ENERGY_MAX  # besin buldu -> aclik sifirlanir
             self.food_found += 1
             events["picked"] = True
+            self.carry_distance = 0.0   # kisa feromon izi icin sifirla
+            # geri donus odulu icin baslangic mesafesini kaydet
+            self.min_home_dist = np.hypot(self.x - world.nest_pos[0],
+                                          self.y - world.nest_pos[1])
 
         # --- yuvaya teslim ---
         if self.carrying and world.at_nest(self.x, self.y):
@@ -192,10 +259,29 @@ class Ant:
             self.energy = C.ENERGY_MAX
             self.food_delivered += 1
             events["delivered"] = True
+            self.min_home_dist = None
+            self.max_odor_seen = 0.0    # yeni arayis basliyor
+
+        # --- odul sekillendirme: dogru yonde ilerlemeyi odullendir ---
+        if self.carrying:
+            # besin tasirken yuvaya YENI en yakin mesafeye ulastiysa odul
+            home_dist = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            if self.min_home_dist is not None and home_dist < self.min_home_dist:
+                self.fitness_bonus += (self.min_home_dist - home_dist) * C.RETURN_REWARD_W
+                self.min_home_dist = home_dist
+        else:
+            # bos gezerken besin kokusunu YENI en yuksek seviyeye tirmandiysa odul
+            if self.last_odor > self.max_odor_seen:
+                self.fitness_bonus += (self.last_odor - self.max_odor_seen) * C.FORAGE_REWARD_W
+                self.max_odor_seen = self.last_odor
 
         # --- feromon birak (antenle koklananin kaynagi) ---
         if self.carrying:
-            world.deposit(C.PH_FOOD, self.x, self.y, C.PH_DEPOSIT_FOOD * dt * 60)
+            # besin feromonu YALNIZCA besin aldiktan sonraki kisa mesafe boyunca
+            # birakilir (iz besin kaynagina yakin ve kisa kalir).
+            self.carry_distance += disp
+            if self.carry_distance <= C.PH_FOOD_TRAIL_DIST:
+                world.deposit(C.PH_FOOD, self.x, self.y, C.PH_DEPOSIT_FOOD * dt * 60)
         else:
             world.deposit(C.PH_HOME, self.x, self.y, C.PH_DEPOSIT_HOME * dt * 60)
 
@@ -208,6 +294,8 @@ class Ant:
         return events
 
     def _try_move(self, dist, world):
+        """Hareketi dener; en az bir eksende ilerlediyse True, tamamen blokeyse False."""
+        ox, oy = self.x, self.y
         nx = self.x + np.cos(self.heading) * dist
         ny = self.y + np.sin(self.heading) * dist
         # eksen bazli kayma: bir eksen bloke olsa bile digerinde kayabilsin
@@ -215,3 +303,5 @@ class Ant:
             self.x = nx
         if not world.is_blocked(self.x, ny) and world.in_bounds(self.x, ny):
             self.y = ny
+        # konum belirgin sekilde degistiyse hareket etti say
+        return abs(self.x - ox) > 1e-6 or abs(self.y - oy) > 1e-6

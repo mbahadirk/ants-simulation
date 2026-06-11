@@ -19,10 +19,29 @@ class Camera:
         self.y = 0.0
         self.follow = None  # takip edilen Ant ya da None
 
-    def cycle_zoom(self):
-        self.zoom_idx = (self.zoom_idx + 1) % len(ZOOM_LEVELS)
+    def _apply_zoom(self, idx, mouse):
+        """Verilen zoom seviyesine gecer; mouse altindaki dunya noktasi sabit kalir."""
+        if mouse is None:
+            mouse = (C.SCREEN_W / 2, C.SCREEN_H / 2)
+        mx, my = mouse
+        wx, wy = self.screen_to_world(mx, my)   # zoom oncesi dunya noktasi
+        self.zoom_idx = idx
         self.zoom = ZOOM_LEVELS[self.zoom_idx]
+        self.follow = None
+        # ayni dunya noktasi yine mouse altinda kalsin
+        self.x = wx - mx / self.zoom
+        self.y = wy - my / self.zoom
         self._clamp()
+
+    def cycle_zoom(self, mouse=None):
+        """Z tusu: bir sonraki zoom seviyesine (mouse'a dogru) gecer."""
+        self._apply_zoom((self.zoom_idx + 1) % len(ZOOM_LEVELS), mouse)
+
+    def wheel_zoom(self, mouse, direction):
+        """Fare tekeri: +1 yakinlas, -1 uzaklas (mouse'a dogru, sarmaz)."""
+        idx = max(0, min(len(ZOOM_LEVELS) - 1, self.zoom_idx + direction))
+        if idx != self.zoom_idx:
+            self._apply_zoom(idx, mouse)
 
     def reset(self):
         self.zoom_idx = 0

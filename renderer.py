@@ -13,14 +13,14 @@ import config as C
 # ant.png yukari (north) bakiyor varsayilir; heading=0 (dogu) icin -90 ofset.
 ANT_IMG_OFFSET = -90
 
-# debug isin renkleri (one-hot index -> renk)
-RAY_HIT_COLORS = {
-    0: (90, 230, 90),    # besin
-    1: (160, 160, 175),  # tas
-    2: (150, 110, 80),   # engel
-    3: (240, 120, 200),  # karinca
-    4: (240, 200, 80),   # yuva
-}
+# debug gorus renkleri (one-hot index -> renk): 0besin 1tas 2engel 3karinca 4yuva
+VIS_OBJ_COLORS = [
+    (230, 50, 50),     # besin
+    (160, 160, 175),   # tas
+    (150, 110, 80),    # engel
+    (240, 120, 200),   # karinca
+    (240, 200, 80),    # yuva
+]
 
 
 def _hsv_color(h, s=0.7, v=1.0):
@@ -32,6 +32,7 @@ def _hsv_color(h, s=0.7, v=1.0):
 class Renderer:
     def __init__(self):
         self.font = pygame.font.SysFont("consolas", 16)
+        self.small = pygame.font.SysFont("consolas", 12, bold=True)
         self.big = pygame.font.SysFont("consolas", 22, bold=True)
         # ant.png yukle
         try:
@@ -43,10 +44,10 @@ class Renderer:
         self._rot_cache = {}  # (deg_bucket, size) -> surface
 
     # --------------------------------------------------------------- dunya
-    def draw_world(self, surf, world, camera, show_pheromones=True):
+    def draw_world(self, surf, world, camera, show_pheromones=True, debug=False):
         surf.fill(C.BG_COLOR)
         if show_pheromones:
-            self._draw_pheromones(surf, world, camera)
+            self._draw_fields(surf, world, camera, debug=debug)
         cs = C.CELL_SIZE
 
         # gorunur hucre araligi
@@ -68,9 +69,15 @@ class Renderer:
                 sx, sy = camera.world_to_screen(col * cs, row * cs)
                 rect = pygame.Rect(sx, sy, scaled_cs + 1, scaled_cs + 1)
                 if t == C.FOOD:
-                    pygame.draw.circle(surf, C.COLORS[C.FOOD],
-                                       (int(sx + scaled_cs / 2), int(sy + scaled_cs / 2)),
+                    ccx = int(sx + scaled_cs / 2)
+                    ccy = int(sy + scaled_cs / 2)
+                    pygame.draw.circle(surf, C.COLORS[C.FOOD], (ccx, ccy),
                                        max(2, int(scaled_cs * 0.32)))
+                    # yeterince yakinsa kalan miktari yaz
+                    if scaled_cs >= 22:
+                        amt = int(world.food_amount[row, col])
+                        t_img = self.small.render(str(amt), True, (255, 255, 255))
+                        surf.blit(t_img, t_img.get_rect(center=(ccx, ccy)))
                 elif t == C.STONE:
                     pygame.draw.rect(surf, C.COLORS[C.STONE], rect, border_radius=max(2, int(scaled_cs * 0.25)))
                 elif t == C.OBSTACLE:
@@ -82,16 +89,20 @@ class Renderer:
         pygame.draw.circle(surf, (120, 85, 30), (int(nx), int(ny)), int(nr))
         pygame.draw.circle(surf, C.COLORS[C.NEST], (int(nx), int(ny)), int(nr), max(2, int(nr * 0.15)))
 
-    def _draw_pheromones(self, surf, world, camera):
+    def _draw_fields(self, surf, world, camera, debug=False):
+        """Feromon izleri (kirmizi=besin izi, mavi=home izi) + besin kokusu (sari)."""
         # (GRID_H, GRID_W) -> (GRID_W, GRID_H) make_surface icin
         home = np.clip(world.ph_home / C.PH_MAX, 0, 1).T
         food = np.clip(world.ph_food / C.PH_MAX, 0, 1).T
-        if home.max() <= 0 and food.max() <= 0:
+        odor = np.clip(world.food_odor, 0, 1).T
+        # debug'da koku daha belirgin gorunsun
+        odor_gain = 170 if debug else 105
+        if home.max() <= 0 and food.max() <= 0 and odor.max() <= 0:
             return
         arr = np.zeros((C.GRID_W, C.GRID_H, 3), dtype=np.uint8)
-        arr[..., 0] = np.clip(food * 235, 0, 255).astype(np.uint8)          # R: besin izi
-        arr[..., 1] = np.clip(food * 90 + home * 35, 0, 255).astype(np.uint8)
-        arr[..., 2] = np.clip(home * 215, 0, 255).astype(np.uint8)          # B: home izi
+        arr[..., 0] = np.clip(food * 235 + odor * odor_gain * 0.9, 0, 255).astype(np.uint8)      # R: besin izi + koku
+        arr[..., 1] = np.clip(food * 70 + home * 30 + odor * odor_gain * 0.8, 0, 255).astype(np.uint8)  # G: koku + izler
+        arr[..., 2] = np.clip(home * 215, 0, 255).astype(np.uint8)                              # B: home izi
         small = pygame.surfarray.make_surface(arr)
         tw = max(1, int(C.WORLD_W * camera.zoom))
         th = max(1, int(C.WORLD_H * camera.zoom))
@@ -126,9 +137,9 @@ class Renderer:
             rect = img.get_rect(center=(sx, sy))
             surf.blit(img, rect)
 
-            # besin tasiyorsa kucuk yesil nokta
+            # besin tasiyorsa kucuk kirmizi nokta
             if ant.carrying:
-                pygame.draw.circle(surf, (90, 230, 90), (int(sx), int(sy - size * 0.4)),
+                pygame.draw.circle(surf, (230, 50, 50), (int(sx), int(sy - size * 0.4)),
                                    max(2, int(size * 0.18)))
 
             # secili karinca -> halka
@@ -138,26 +149,32 @@ class Renderer:
 
     def _draw_vision(self, surf, ant, camera):
         sx, sy = camera.world_to_screen(ant.x, ant.y)
-        for (ang, dist, idx) in ant.last_rays:
-            ex = ant.x + math.cos(ang) * dist
-            ey = ant.y + math.sin(ang) * dist
-            esx, esy = camera.world_to_screen(ex, ey)
-            if idx is None:
-                color = (60, 60, 70)
-            else:
-                color = RAY_HIT_COLORS.get(idx, (200, 200, 200))
-            pygame.draw.line(surf, color, (sx, sy), (esx, esy), 1)
-            if idx is not None:
-                pygame.draw.circle(surf, color, (int(esx), int(esy)), 3)
+        rad = camera.scale(C.VISION_RANGE)
+        # 180 derece gorus yelpazesi (heading +- 90 derece yay)
+        if rad > 2:
+            half = C.VISION_FOV / 2.0
+            pts = [(sx, sy)]
+            steps = 18
+            for i in range(steps + 1):
+                a = ant.heading - half + (C.VISION_FOV * i / steps)
+                pts.append((sx + math.cos(a) * rad, sy + math.sin(a) * rad))
+            pygame.draw.polygon(surf, (70, 70, 85), pts, 1)
+        # gorulen nesnelere cizgi + nokta (one-hot indekse gore renk)
+        for (oi, ox, oy, dist) in ant.last_seen:
+            osx, osy = camera.world_to_screen(ox, oy)
+            color = VIS_OBJ_COLORS[oi] if 0 <= oi < len(VIS_OBJ_COLORS) else (200, 200, 200)
+            pygame.draw.line(surf, color, (sx, sy), (osx, osy), 1)
+            pygame.draw.circle(surf, color, (int(osx), int(osy)), 3)
 
     # ----------------------------------------------------------------- HUD
-    def draw_hud(self, surf, sim, camera, debug, recorder, paused=False):
+    def draw_hud(self, surf, sim, camera, debug, recorder, paused=False, speed=1.0):
         st = sim.stats()
         lines = [
             f"Karinca: {st['pop']}   Tasiyan: {st['carrying']}",
             f"Teslim: {st['delivered']}   Dogum: {st['births']}   Olum: {st['deaths']}",
             f"Nesil: {st['generation']}   Besin: {st['food_left']}   Sure: {int(st['time'])}s",
-            f"Zoom: x{camera.zoom:.1f}",
+            f"Onur listesi: {st['hof_size']}   En iyi fitness: {st['hof_best']:.1f}",
+            f"Zoom: x{camera.zoom:.1f}   Speed: x{speed:g}   Omur: {int(C.LIFESPAN_MIN)}-{int(C.LIFESPAN_MAX)}s",
         ]
         y = 8
         for ln in lines:
@@ -178,26 +195,43 @@ class Renderer:
             self._draw_ant_panel(surf, sim.selected)
 
         # yardim
-        help_txt = "D:debug  Z:zoom  S:kayit  Space:duraklat  Ok:pan  Tik:secim  R:reset-kamera  ESC:menu"
+        help_txt = ("D:debug  Z:zoom  O/P:hiz-/+  K/L:omur-/+  S:kayit  Space:duraklat  "
+                    "Ok:pan  Tik:secim  R:reset  ESC:menu")
         self._text(surf, help_txt, 10, C.SCREEN_H - 22, (150, 150, 150))
 
     def _draw_ant_panel(self, surf, ant):
-        x0, y0, w, h = C.SCREEN_W - 230, 60, 220, 150
+        x0, y0, w, h = C.SCREEN_W - 240, 60, 230, 224
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
         panel.fill((20, 20, 30, 210))
         surf.blit(panel, (x0, y0))
         info = [
-            f"ID: {ant.id}  Nesil: {ant.generation}",
-            f"Yas: {ant.age:.1f}/{ant.lifespan:.0f}s",
-            f"Enerji: {max(0,ant.energy):.2f}",
-            f"Tasiyor: {'evet' if ant.carrying else 'hayir'}",
-            f"Teslim: {ant.food_delivered}",
-            f"Aksiyon: {C.ACTION_NAMES[ant.last_action]}",
+            (f"ID: {ant.id}  Nesil: {ant.generation}", (220, 220, 230)),
+            (f"Yas: {ant.age:.1f}/{ant.lifespan:.0f}s", (220, 220, 230)),
+            (f"Enerji: {max(0,ant.energy):.2f}", (220, 220, 230)),
+            (f"Tasiyor: {'evet' if ant.carrying else 'hayir'}", (220, 220, 230)),
+            (f"Bulunan: {ant.food_found}  Teslim: {ant.food_delivered}", (220, 220, 230)),
+            (f"Aksiyon: {C.ACTION_NAMES[ant.last_action]}", (220, 220, 230)),
+            (f"Koku algi: {ant.last_odor:.2f}", (120, 230, 120)),
+            (f"Food feromon: {ant.last_food_ph:.2f}", (230, 130, 130)),
+            (f"Duvar carpma: {ant.wall_hits}  Bekle: {ant.idle_steps}", (230, 200, 130)),
         ]
         yy = y0 + 8
-        for ln in info:
-            self._text(surf, ln, x0 + 10, yy, (220, 220, 230))
+        for ln, col in info:
+            self._text(surf, ln, x0 + 10, yy, col)
             yy += 22
+
+    def draw_flash(self, surf, text):
+        """Ekranin altinda gecici bildirim kutusu (kayit/devam)."""
+        if not text:
+            return
+        img = self.big.render(text, True, (255, 240, 160))
+        w, h = img.get_size()
+        x = (C.SCREEN_W - w) // 2
+        y = C.SCREEN_H - 70
+        bg = pygame.Surface((w + 24, h + 16), pygame.SRCALPHA)
+        bg.fill((20, 30, 20, 220))
+        surf.blit(bg, (x - 12, y - 8))
+        surf.blit(img, (x, y))
 
     def _text(self, surf, txt, x, y, color=(230, 230, 230)):
         surf.blit(self.font.render(txt, True, color), (x, y))

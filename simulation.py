@@ -3,18 +3,21 @@ Simulasyon: populasyon yonetimi + genetik ureme.
 
 - Baslangicta INITIAL_POP karinca yuvada rastgele genomlarla dogar.
 - Her karinca algilar, dusunur, hareket eder (ant.update).
-- Yuvaya her FOOD_PER_BIRTH (3) besin teslim edildiginde, o besinleri getiren
-  son N_PARENTS (3) karincanin genomundan crossover+mutasyon ile 1 yavru uretilir.
+- Yuvaya besin getiren HER karincadan, kendi genomundan (mutasyonla)
+  OFFSPRING_PER_DELIVERY (3) adet yavru dogar.
 - Yas / aclik nedeniyle olen karincalar kaldirilir.
 - Populasyon MIN_POP altina duserse rastgele takviye yapilir (nesil tukenmesin).
 """
 
+import os
+import pickle
+
 import numpy as np
 
 import config as C
-from world import make_default_world
+from world import make_default_world, World
 from ant import Ant
-from neural_network import breed
+from neural_network import breed, mutate
 
 
 class Simulation:
@@ -23,10 +26,11 @@ class Simulation:
         self.world = world or make_default_world()
         self.ants = []
 
-        # ureme tamponu: teslim eden karincalarin (genom, nesil) bilgisi
-        self._parent_buffer = []
-        # fitness havuzu: en iyi olen karincalarin (fitness, genom, nesil)
-        self._fitness_pool = []
+        # ONUR LISTESI (hall of fame): tum zamanlarin en iyi karincalari.
+        # ant_id -> (fitness, genom, nesil). Olen karincalarin yerine gelenler
+        # buradan uretilir. Yasayan elitler de periyodik olarak buraya sunulur.
+        self.hall = {}
+        self._hof_acc = 0.0
 
         # istatistikler
         self.total_delivered = 0
@@ -34,6 +38,7 @@ class Simulation:
         self.deaths = 0
         self.generation = 0
         self.sim_time = 0.0
+        self._food_spawn_acc = 0.0   # periyodik besin zamanlayicisi
         self.selected = None  # debug'da secili karinca
 
         self._spawn_initial()
@@ -61,6 +66,13 @@ class Simulation:
     # ------------------------------------------------------------- guncelleme
     def update(self, dt):
         self.sim_time += dt
+
+        # periyodik besin: her FOOD_SPAWN_INTERVAL saniyede bir rastgele bos hucre
+        self._food_spawn_acc += dt
+        if self._food_spawn_acc >= C.FOOD_SPAWN_INTERVAL:
+            self._food_spawn_acc -= C.FOOD_SPAWN_INTERVAL
+            self.world.spawn_random_food(self.rng, C.FOOD_SPAWN_AMOUNT)
+
         for ant in self.ants:
             events = ant.update(dt, self.world, self.ants)
             if events["delivered"]:
@@ -68,73 +80,82 @@ class Simulation:
 
         self.world.update_pheromones(dt)
 
-        # olenleri kaldir (olmeden onceki en iyileri fitness havuzuna al)
+        # yasayan en iyi karincayi periyodik olarak onur listesine sun
+        self._hof_acc += dt
+        if self._hof_acc >= C.HOF_OFFER_EVERY and self.ants:
+            self._hof_acc = 0.0
+            best = max(self.ants, key=lambda a: a.fitness())
+            self._offer_hall(best)
+
+        # olenleri kaldir (olmeden once onur listesine sun)
         before = len(self.ants)
         survivors = []
         for a in self.ants:
             if a.alive:
                 survivors.append(a)
             else:
-                self._record_fitness(a)
+                self._offer_hall(a)
         self.ants = survivors
         self.deaths += before - len(self.ants)
         if self.selected is not None and not self.selected.alive:
             self.selected = None
 
-        # populasyon dususte takviye
+        # populasyon dususte: olenlerin yerine TUM ZAMANLARIN EN IYILERINDEN uret
         while len(self.ants) < C.MIN_POP:
             if self._reinforce() is None:
                 break
 
-    def _record_fitness(self, ant):
-        """Olen karincanin genomunu fitness havuzunda tut (en iyi N saklanir)."""
+    def _offer_hall(self, ant):
+        """Karincayi onur listesine sunar (tum zamanlarin en iyileri saklanir)."""
         f = ant.fitness()
         if f <= 0:
             return
-        self._fitness_pool.append((f, ant.genome(), ant.generation))
-        self._fitness_pool.sort(key=lambda t: t[0], reverse=True)
-        del self._fitness_pool[C.TOP_SURVIVORS:]
+        prev = self.hall.get(ant.id)
+        # ayni karinca daha once eklendiyse, fitness'i arttiysa guncelle
+        if prev is None or f > prev[0]:
+            self.hall[ant.id] = (f, ant.genome(), ant.generation)
+        # listeyi en iyi HALL_OF_FAME_SIZE ile sinirla (en dusukleri at)
+        if len(self.hall) > C.HALL_OF_FAME_SIZE:
+            best_ids = sorted(self.hall, key=lambda k: self.hall[k][0],
+                              reverse=True)[:C.HALL_OF_FAME_SIZE]
+            self.hall = {k: self.hall[k] for k in best_ids}
+
+    def hall_best(self):
+        """Onur listesini fitness'a gore azalan sirada (fitness, genom, nesil) doner."""
+        return sorted(self.hall.values(), key=lambda t: t[0], reverse=True)
 
     def _reinforce(self):
-        """Populasyonu rastgele yerine en iyi genomlardan tamamlar."""
-        pool = []
-        # once yasayan en iyiler, sonra fitness havuzu
-        living = sorted(self.ants, key=lambda a: a.fitness(), reverse=True)
-        pool += [(a.fitness(), a.genome(), a.generation) for a in living if a.fitness() > 0]
-        pool += self._fitness_pool
-        pool.sort(key=lambda t: t[0], reverse=True)
-        pool = pool[:C.TOP_SURVIVORS]
+        """Olen karincanin yerine TUM ZAMANLARIN EN IYI karincalarindan biri gelir."""
+        elite = self.hall_best()
 
-        if C.FITNESS_REINFORCE and len(pool) >= 2:
-            k = min(C.N_PARENTS, len(pool))
-            idx = self.rng.choice(len(pool), size=k, replace=False)
-            genomes = [pool[i][1] for i in idx]
-            gen = max(pool[i][2] for i in idx) + 1
-            child = breed(genomes, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
+        if C.FITNESS_REINFORCE and elite:
+            if len(elite) >= 2:
+                # en basarili N ebeveynin genetigini birlestir
+                k = min(C.N_PARENTS, len(elite))
+                parents = elite[:k]
+                genomes = [p[1] for p in parents]
+                gen = max(p[2] for p in parents) + 1
+                child = breed(genomes, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
+            else:
+                # tek elit varsa onu mutasyonla klonla
+                child = mutate(elite[0][1], self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
+                gen = elite[0][2] + 1
+            self.generation = max(self.generation, gen)
             return self._spawn_ant(genome=child, generation=gen)
-        # havuz yoksa rastgele
+        # onur listesi henuz bossa (baslangic) rastgele
         return self._spawn_ant(genome=None, generation=self.generation)
 
     def _on_delivery(self, ant):
         self.total_delivered += 1
         self.world.delivered_food += 1
-        self._parent_buffer.append((ant.genome(), ant.generation))
-
-        if len(self._parent_buffer) >= C.FOOD_PER_BIRTH:
-            self._reproduce()
-            self._parent_buffer = []
-
-    def _reproduce(self):
-        parents = self._parent_buffer[-C.N_PARENTS:]
-        genomes = [g for (g, _) in parents]
-        # ebeveyn sayisi azsa (teorik olarak olmaz) mevcut olanlarla devam
-        if len(genomes) < 2:
-            return
-        child_genome = breed(genomes, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
-        child_gen = max(g for (_, g) in parents) + 1
+        # Teslim eden HER karincadan, kendi genomundan (mutasyonla) birden cok yavru
+        parent_genome = ant.genome()
+        child_gen = ant.generation + 1
         self.generation = max(self.generation, child_gen)
-        if self._spawn_ant(genome=child_genome, generation=child_gen) is not None:
-            self.births += 1
+        for _ in range(C.OFFSPRING_PER_DELIVERY):
+            child = mutate(parent_genome, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
+            if self._spawn_ant(genome=child, generation=child_gen) is not None:
+                self.births += 1
 
     # ------------------------------------------------------------------ debug
     def select_at(self, wx, wy, radius=18.0):
@@ -152,6 +173,7 @@ class Simulation:
     # ------------------------------------------------------------------ stats
     def stats(self):
         carrying = sum(1 for a in self.ants if a.carrying)
+        hof_best = max((t[0] for t in self.hall.values()), default=0.0)
         return {
             "pop": len(self.ants),
             "carrying": carrying,
@@ -161,4 +183,116 @@ class Simulation:
             "generation": self.generation,
             "food_left": self.world.food_count(),
             "time": self.sim_time,
+            "hof_size": len(self.hall),
+            "hof_best": hof_best,
         }
+
+    # ------------------------------------------------------------------ kayit
+    SAVE_VERSION = 1
+
+    def _ant_state(self, a):
+        return {
+            "x": a.x, "y": a.y, "heading": a.heading, "energy": a.energy,
+            "age": a.age, "lifespan": a.lifespan, "alive": a.alive,
+            "carrying": a.carrying, "generation": a.generation,
+            "food_found": a.food_found, "food_delivered": a.food_delivered,
+            "wall_hits": a.wall_hits, "idle_steps": a.idle_steps,
+            "fitness_bonus": a.fitness_bonus, "min_home_dist": a.min_home_dist,
+            "max_odor_seen": a.max_odor_seen, "carry_distance": a.carry_distance,
+            "genome": a.brain.get_genome(),
+            "h": a.brain.h.copy(), "c": a.brain.c.copy(),
+        }
+
+    def save(self, path):
+        """Simulasyon state'ini kaydet (kaldigi yerden devam etmek icin)."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        state = {
+            "version": self.SAVE_VERSION,
+            "ants": [self._ant_state(a) for a in self.ants],
+            "world_grid": self.world.grid.copy(),
+            "world_food_amount": self.world.food_amount.copy(),
+            "world_ph_home": self.world.ph_home.copy(),
+            "world_ph_food": self.world.ph_food.copy(),
+            "world_food_odor": self.world.food_odor.copy(),
+            "world_delivered_food": self.world.delivered_food,
+            "total_delivered": self.total_delivered,
+            "births": self.births,
+            "deaths": self.deaths,
+            "generation": self.generation,
+            "sim_time": self.sim_time,
+            "food_spawn_acc": self._food_spawn_acc,
+            "next_ant_id": Ant._next_id,
+            # onur listesi (tum zamanlarin en iyileri)
+            "hall": {aid: (f, g.copy(), gen) for aid, (f, g, gen) in self.hall.items()},
+            # ayarlar (devamda tutarlilik)
+            "lifespan_min": C.LIFESPAN_MIN, "lifespan_max": C.LIFESPAN_MAX,
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(state, f)
+        os.replace(tmp, path)  # atomik yazim (yarim kayit olmasin)
+
+    @classmethod
+    def load(cls, path):
+        """Kaydedilmis simulasyonu yukle ve devam ettir."""
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+
+        # ag mimarisi degistiyse (genom boyutu) eski checkpoint uyumsuzdur
+        from neural_network import LSTMPolicy
+        expected = LSTMPolicy().genome_size
+        ants_state = state.get("ants", [])
+        if ants_state and len(ants_state[0]["genome"]) != expected:
+            raise ValueError(
+                f"Checkpoint sinir agi boyutu uyumsuz "
+                f"({len(ants_state[0]['genome'])} != {expected}). "
+                "Gorus/ag mimarisi degistigi icin eski kayit yuklenemez."
+            )
+
+        # dunyayi kaydedilen grid'ten yeniden olustur (yuva + koku otomatik)
+        world = World(grid=state["world_grid"].copy(),
+                      food_amount=state["world_food_amount"].copy())
+        world.ph_home = state["world_ph_home"].copy()
+        world.ph_food = state["world_ph_food"].copy()
+        world.food_odor = state["world_food_odor"].copy()
+        world.delivered_food = state.get("world_delivered_food", 0)
+
+        sim = cls(world=world, seed=None)
+        sim.ants.clear()
+
+        for s in state["ants"]:
+            a = Ant(s["x"], s["y"], genome=s["genome"], rng=sim.rng,
+                    generation=s["generation"])
+            a.heading = float(s["heading"])
+            a.energy = float(s["energy"])
+            a.age = float(s["age"])
+            a.lifespan = float(s["lifespan"])
+            a.alive = bool(s["alive"])
+            a.carrying = bool(s["carrying"])
+            a.food_found = s["food_found"]
+            a.food_delivered = s["food_delivered"]
+            a.wall_hits = s["wall_hits"]
+            a.idle_steps = s["idle_steps"]
+            a.fitness_bonus = s["fitness_bonus"]
+            a.min_home_dist = s["min_home_dist"]
+            a.max_odor_seen = s["max_odor_seen"]
+            a.carry_distance = s.get("carry_distance", 0.0)
+            a.brain.h = s["h"].copy()      # LSTM gizli durumu
+            a.brain.c = s["c"].copy()
+            sim.ants.append(a)
+
+        Ant._next_id = state.get("next_ant_id", len(sim.ants))
+        sim.total_delivered = state["total_delivered"]
+        sim.births = state["births"]
+        sim.deaths = state["deaths"]
+        sim.generation = state["generation"]
+        sim.sim_time = state["sim_time"]
+        sim._food_spawn_acc = state.get("food_spawn_acc", 0.0)
+        # onur listesini geri yukle (eski kayitlarda olmayabilir)
+        hall = state.get("hall", {})
+        sim.hall = {aid: (f, g.copy(), gen) for aid, (f, g, gen) in hall.items()}
+
+        # ayarlari geri yukle
+        C.LIFESPAN_MIN = state.get("lifespan_min", C.LIFESPAN_MIN)
+        C.LIFESPAN_MAX = state.get("lifespan_max", C.LIFESPAN_MAX)
+        return sim

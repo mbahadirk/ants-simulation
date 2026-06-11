@@ -65,12 +65,11 @@ class LSTMPolicy:
         self.params["b_f"] += 1.0
 
         # Kesif onyargisi: rastgele beyinler de kesfetsin diye baslangicta
-        # "ileri" cikisina pozitif bias verilir (karincalarin dogustan
-        # gezme/yiyecek arama egilimi). Bu bir baslangic prioru'dur;
-        # evrim faydali bulmazsa zamanla degisir.
-        self.params["b_y"][ACTION_FORWARD] = 0.9
+        # "ileri" cikisina hafif pozitif bias verilir. Cok guclu olursa
+        # karincalar surekli ileri gider; bu yuzden olculu tutulur.
+        self.params["b_y"][ACTION_FORWARD] = 0.4
         self.params["b_y"][ACTION_NONE] = -0.3
-        self.params["b_y"][ACTION_BACK] = -0.4
+        self.params["b_y"][ACTION_BACK] = -0.3
 
     def reset_state(self):
         self.h = np.zeros(self.hidden_size, dtype=np.float32)
