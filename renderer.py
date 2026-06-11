@@ -13,13 +13,11 @@ import config as C
 # ant.png yukari (north) bakiyor varsayilir; heading=0 (dogu) icin -90 ofset.
 ANT_IMG_OFFSET = -90
 
-# debug gorus renkleri (one-hot index -> renk): 0besin 1tas 2engel 3karinca 4yuva
+# debug gorus renkleri (one-hot index -> renk): 0:besin 1:engelli(tas|engel) 2:karinca
 VIS_OBJ_COLORS = [
     (230, 50, 50),     # besin
-    (160, 160, 175),   # tas
-    (150, 110, 80),    # engel
+    (160, 160, 175),   # engelli (tas veya engel)
     (240, 120, 200),   # karinca
-    (240, 200, 80),    # yuva
 ]
 
 
@@ -134,6 +132,7 @@ class Renderer:
 
             if debug:
                 self._draw_vision(surf, ant, camera)
+                self._draw_homing_arrow(surf, ant, camera, size)
 
             img = self._ant_surface(ant.heading, size)
             rect = img.get_rect(center=(sx, sy))
@@ -167,6 +166,32 @@ class Renderer:
             color = VIS_OBJ_COLORS[oi] if 0 <= oi < len(VIS_OBJ_COLORS) else (200, 200, 200)
             pygame.draw.line(surf, color, (sx, sy), (osx, osy), 1)
             pygame.draw.circle(surf, color, (int(osx), int(osy)), 3)
+
+    def _draw_homing_arrow(self, surf, ant, camera, size):
+        """Debug: yuvaya dogru homing oku. Mavi=bos geziyor, sari=besin tasiyor."""
+        sx, sy = camera.world_to_screen(ant.x, ant.y)
+        # yuva yonu (dunya koordinatlarinda)
+        nx, ny = ant.x, ant.y  # hesap icin ant konumunu kullan
+        # world'e erisim yok ama ant.last_seen yok, dogrudan heading+homing hesaplayabiliriz
+        # Ancak ant nesnesi world.nest_pos'u saklamiyor; renderer world'e erisemiyor.
+        # Cozum: ant.sense() zaten homing vektorunu hesapliyor, onu saklayalim.
+        # Burada ant._homing_angle kullaniyoruz (sense()'te set edilir).
+        hangle = getattr(ant, "_homing_world_angle", None)
+        if hangle is None:
+            return
+        color = (240, 200, 60) if ant.carrying else (80, 160, 255)
+        length = max(18, size * 1.4)
+        ex = sx + math.cos(hangle) * length
+        ey = sy + math.sin(hangle) * length
+        pygame.draw.line(surf, color, (int(sx), int(sy)), (int(ex), int(ey)), 2)
+        # ok ucu (kucuk ucgen)
+        tip_angle = math.atan2(ey - sy, ex - sx)
+        spread = 0.45
+        tip_len = max(6, size * 0.45)
+        for sign in (+1, -1):
+            bx = ex - math.cos(tip_angle + sign * spread) * tip_len
+            by = ey - math.sin(tip_angle + sign * spread) * tip_len
+            pygame.draw.line(surf, color, (int(ex), int(ey)), (int(bx), int(by)), 2)
 
     # ----------------------------------------------------------------- HUD
     def draw_hud(self, surf, sim, camera, debug, recorder, paused=False, speed=1.0):

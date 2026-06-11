@@ -13,9 +13,10 @@ import numpy as np
 import config as C
 from neural_network import LSTMPolicy
 
-# Nesne tipi -> sektor one-hot indeksi (0:besin 1:tas 2:engel 3:karinca 4:yuva)
-_VIS_OBJ_INDEX = {C.FOOD: 0, C.STONE: 1, C.OBSTACLE: 2, C.NEST: 4}
-_ANT_OBJ_INDEX = 3
+# Nesne tipi -> sektor one-hot indeksi (0:besin 1:engelli[tas|engel] 2:karinca)
+# Yuva goruten cikarildi (homing girdisi zaten karsilar); tas+engel "engelli"de birlesti.
+_VIS_OBJ_INDEX = {C.FOOD: 0, C.STONE: 1, C.OBSTACLE: 1}
+_ANT_OBJ_INDEX = 2
 
 
 def _wrap_angle(a):
@@ -173,6 +174,8 @@ class Ant:
             np.cos(nrel),
             min(1.0, ndist / max_d),
         ], dtype=np.float32)
+        # debug oku icin dunya koordinatlarinda yuva yonu (renderer kullanir)
+        self._homing_world_angle = float(np.arctan2(ndy, ndx))
 
         # --- feromon antenleri (sol/orta/sag x home/food) ---
         ph = np.zeros(C.PHEROMONE_INPUTS, dtype=np.float32)

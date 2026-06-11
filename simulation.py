@@ -147,35 +147,44 @@ class Simulation:
         return sorted(self.hall.values(), key=lambda t: t[0], reverse=True)
 
     def _reinforce(self):
-        """Olen karincanin yerine TUM ZAMANLARIN EN IYI karincalarindan biri gelir."""
+        """Olen karincanin yerine TUM ZAMANLARIN EN IYI karincalarindan biri gelir.
+        Her 4 takviyeden 1'i tamamen rastgele genomlu: cesitlilik korunur, koloni
+        HOF donukluguna (eski basarili genomlarin tekrarlanmasina) takılmaz."""
         elite = self.hall_best()
+
+        # %25 olasilikla tamamen rastgele genom enjekte et
+        if not elite or self.rng.random() < 0.25:
+            return self._spawn_ant(genome=None, generation=self.generation)
 
         if C.FITNESS_REINFORCE and elite:
             if len(elite) >= 2:
-                # en basarili N ebeveynin genetigini birlestir
                 k = min(C.N_PARENTS, len(elite))
                 parents = elite[:k]
                 genomes = [p[1] for p in parents]
                 gen = max(p[2] for p in parents) + 1
                 child = breed(genomes, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
             else:
-                # tek elit varsa onu mutasyonla klonla
                 child = mutate(elite[0][1], self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
                 gen = elite[0][2] + 1
             self.generation = max(self.generation, gen)
             return self._spawn_ant(genome=child, generation=gen)
-        # onur listesi henuz bossa (baslangic) rastgele
         return self._spawn_ant(genome=None, generation=self.generation)
 
     def _on_delivery(self, ant):
         self.total_delivered += 1
         self.world.delivered_food += 1
-        # Teslim eden HER karincadan, kendi genomundan (mutasyonla) birden cok yavru
         parent_genome = ant.genome()
         child_gen = ant.generation + 1
         self.generation = max(self.generation, child_gen)
+        elite = self.hall_best()
         for _ in range(C.OFFSPRING_PER_DELIVERY):
-            child = mutate(parent_genome, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
+            # %40 ihtimalle HOF'tan biriyle crossover yap -> yavru daha cesitli olur
+            if elite and self.rng.random() < 0.40:
+                other = elite[self.rng.integers(0, min(len(elite), C.N_PARENTS))][1]
+                child = breed([parent_genome, other], self.rng,
+                              C.MUTATION_RATE, C.MUTATION_SCALE)
+            else:
+                child = mutate(parent_genome, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
             if self._spawn_ant(genome=child, generation=child_gen) is not None:
                 self.births += 1
 

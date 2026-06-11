@@ -97,9 +97,10 @@ CARRY_AWAY_PENALTY_W = 0.05
 # gorunmez, ama 180 derece icindeki tum (farkli yonlerdeki) nesneler gorunur.
 VISION_RANGE = 130.0            # gorus yaricapi (piksel) ~6.5 hucre
 VISION_FOV = 3.141592653589793  # 180 derece (on yari daire)
-N_SECTORS = 12                  # gorus acisini kac dilime bolelim
-N_VIS_OBJ = 5                   # one-hot tipler: besin, tas, engel, karinca, yuva
-# Her sektor: [yakinlik(0..1), besin, tas, engel, karinca, yuva] = 6
+N_SECTORS = 8                   # gorus acisini kac dilime bolelim (12'den dusuruldu)
+N_VIS_OBJ = 3                   # one-hot tipler: besin, engelli(tas+engel), karinca
+# Her sektor: [yakinlik(0..1), besin, engelli, karinca] = 4
+# Yuva gorusten cikti (homing girdisi zaten karsilior); tas+engel "engelli" olarak birlesti.
 SECTOR_FEATURES = 1 + N_VIS_OBJ
 VISION_INPUTS = N_SECTORS * SECTOR_FEATURES
 RAY_STEP = 6.0                  # (eski raycast yardimcisi icin)
@@ -140,7 +141,7 @@ PH_FOOD_EVAPORATION = 0.005  # besin feromonu saniyelik buharlasma orani (yavas)
 PH_MAX = 200.0              # feromon tavani (normalize icin)
 # "Super iz" (yogun besin yolu): esigin ustundeki guclu izler COK daha yavas
 # buharlasir ve MOR renge doner -> sik kullanilan besin yollari kalici olur.
-PH_FOOD_STRONG_THRESH = 110.0   # bu yogunlugun ustu "super iz" sayilir
+PH_FOOD_STRONG_THRESH = 165.0   # bu yogunlugun ustu "super iz" sayilir (zorlaştirildi: 110->165)
 PH_FOOD_STRONG_EVAP_MULT = 0.12 # super izde buharlasma carpani (cok yavas)
 # Yayilim (difuzyon) izleri genisletir -> yon algisini bozar. Cok seyrek tutulur
 # ki izler KESKIN kalsin ve karincalar yonu (sol/orta/sag anten) ayirt edebilsin.
@@ -167,7 +168,7 @@ FOOD_MAX_AMOUNT = 999
 
 # Periyodik besin: her FOOD_SPAWN_INTERVAL saniyede bir, tas/engel olmayan
 # rastgele bos bir hucrede FOOD_SPAWN_AMOUNT degerinde besin olusur.
-FOOD_SPAWN_INTERVAL = 60.0
+FOOD_SPAWN_INTERVAL = 30.0      # periyodik besin araligi (60'tan dusuruldu)
 FOOD_SPAWN_AMOUNT = 5
 
 # ---------------------------------------------------------------------------
@@ -176,8 +177,8 @@ FOOD_SPAWN_AMOUNT = 5
 # LSTM'den ONCE bir Dense kodlayici: cok sayidaki girdiyi (86) daha kucuk,
 # anlamli bir temsile sikistirir -> LSTM girdisi kuculur, genom kuculur,
 # GA icin arama uzayi daralir (daha hizli evrim).
-ENCODER_SIZE = 24               # LSTM oncesi Dense kodlayici boyutu
-HIDDEN_SIZE = 16                # LSTM gizli katman boyutu
+ENCODER_SIZE = 16               # LSTM oncesi Dense kodlayici boyutu (24'ten dusuruldu)
+HIDDEN_SIZE = 12                # LSTM gizli katman boyutu (16'dan dusuruldu)
 OUTPUT_SIZE = 5                  # 0:hicbiri 1:ileri 2:geri 3:sol 4:sag
 
 ACTION_NONE = 0
@@ -197,14 +198,14 @@ ACTION_NAMES = {
 # Genetik algoritma
 # ---------------------------------------------------------------------------
 INITIAL_POP = 40                # baslangic karinca sayisi
-MIN_POP = 15                    # bu sayinin altina dusulurse takviye
+MIN_POP = 15                    # bu sayinin altina dusulurse takviye (15'ten artirildi)
 MAX_POP = 80                    # ust sinir
 # Ureme: yuvaya besin getiren HER karincadan, o karincanin genomundan
 # (mutasyonla) OFFSPRING_PER_DELIVERY adet yavru dogar.
-OFFSPRING_PER_DELIVERY = 5      # her teslim eden karincadan kac yavru
-N_PARENTS = 3                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
-MUTATION_RATE = 0.06            # gen basina mutasyon olasiligi (dusuk -> kararli rafine)
-MUTATION_SCALE = 0.14           # mutasyon gauss siddeti
+OFFSPRING_PER_DELIVERY = 5      # her teslim eden karincadan kac yavru (5'ten dusuruldu)
+N_PARENTS = 2                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
+MUTATION_RATE = 0.10            # gen basina mutasyon olasiligi (0.06'dan artirildi)
+MUTATION_SCALE = 0.20           # mutasyon gauss siddeti (0.14'ten artirildi)
 
 # Fitness takviyesi: populasyon dususte rastgele yerine TUM ZAMANLARIN EN IYI
 # karincalarindan (hall of fame) ureme yapilir. Olen karincalarin yerine

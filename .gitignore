@@ -1,4 +1,5 @@
-/.claude
-/.venv
-/recordings
-/__pycache__
+.claude
+.venv
+recordings
+__pycache__
+demos
