@@ -139,9 +139,15 @@ class World:
     def update_pheromones(self, dt):
         # buharlasma
         decay_home = max(0.0, 1.0 - C.PH_HOME_EVAPORATION * dt)
-        decay_food = max(0.0, 1.0 - C.PH_FOOD_EVAPORATION * dt)
         self.ph_home *= decay_home
-        self.ph_food *= decay_food
+        # besin feromonu: "super iz" (esik ustu yogun yollar) cok daha yavas
+        # buharlasir -> sik kullanilan besin yollari kalici olur.
+        decay_food = max(0.0, 1.0 - C.PH_FOOD_EVAPORATION * dt)
+        decay_food_strong = max(0.0, 1.0 - C.PH_FOOD_EVAPORATION
+                                * C.PH_FOOD_STRONG_EVAP_MULT * dt)
+        strong = self.ph_food > C.PH_FOOD_STRONG_THRESH
+        self.ph_food = np.where(strong, self.ph_food * decay_food_strong,
+                                self.ph_food * decay_food)
 
         # arada bir hafif yayilim (komsu ortalamasiyla)
         self._diffuse_acc += dt

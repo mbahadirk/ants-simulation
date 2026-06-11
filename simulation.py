@@ -41,7 +41,23 @@ class Simulation:
         self._food_spawn_acc = 0.0   # periyodik besin zamanlayicisi
         self.selected = None  # debug'da secili karinca
 
+        # zaman serisi istatistik (T tusu ile gorsellestirilir)
+        self.history = []            # her ornek: dict(t,pop,births,deaths,delivered,hof_best,gen)
+        self._stats_acc = 0.0
+
         self._spawn_initial()
+
+    def _record_history(self):
+        s = self.stats()
+        self.history.append({
+            "t": round(self.sim_time, 1),
+            "pop": s["pop"],
+            "births": s["births"],
+            "deaths": s["deaths"],
+            "delivered": s["delivered"],
+            "hof_best": round(s["hof_best"], 2),
+            "gen": s["generation"],
+        })
 
     # ------------------------------------------------------------- baslangic
     def _spawn_initial(self):
@@ -72,6 +88,12 @@ class Simulation:
         if self._food_spawn_acc >= C.FOOD_SPAWN_INTERVAL:
             self._food_spawn_acc -= C.FOOD_SPAWN_INTERVAL
             self.world.spawn_random_food(self.rng, C.FOOD_SPAWN_AMOUNT)
+
+        # zaman serisi istatistik ornegi
+        self._stats_acc += dt
+        if self._stats_acc >= C.STATS_SAMPLE_INTERVAL:
+            self._stats_acc -= C.STATS_SAMPLE_INTERVAL
+            self._record_history()
 
         for ant in self.ants:
             events = ant.update(dt, self.world, self.ants)
@@ -222,6 +244,7 @@ class Simulation:
             "sim_time": self.sim_time,
             "food_spawn_acc": self._food_spawn_acc,
             "next_ant_id": Ant._next_id,
+            "history": list(self.history),
             # onur listesi (tum zamanlarin en iyileri)
             "hall": {aid: (f, g.copy(), gen) for aid, (f, g, gen) in self.hall.items()},
             # ayarlar (devamda tutarlilik)
@@ -288,6 +311,7 @@ class Simulation:
         sim.generation = state["generation"]
         sim.sim_time = state["sim_time"]
         sim._food_spawn_acc = state.get("food_spawn_acc", 0.0)
+        sim.history = list(state.get("history", []))
         # onur listesini geri yukle (eski kayitlarda olmayabilir)
         hall = state.get("hall", {})
         sim.hall = {aid: (f, g.copy(), gen) for aid, (f, g, gen) in hall.items()}

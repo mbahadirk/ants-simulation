@@ -1,20 +1,19 @@
 """
-LSTM + feedforward sinir agi (saf NumPy).
+Sinir agi (saf NumPy):  girdi -> Dense(encoder) -> LSTM -> Dense(cikis) -> argmax
 
-Bu agda backprop YOKTUR. Agirliklar dogrudan "genom" olarak ele alinir;
+Bu agda backprop YOKTUR. Tum agirliklar dogrudan "genom" olarak ele alinir;
 genetik algoritma bu genomlari crossover + mutasyon ile evrimlestirir.
 
-Mimari:
-    girdi (sensorler) -> LSTM(hidden) -> Dense(output) -> argmax -> aksiyon
-
-Her karincanin kendi LSTM gizli durumu (h, c) vardir; bu yuzden ag
-zamansal hafizaya sahiptir (kisa gorus ile dolasirken yon hafizasi gibi).
+- Dense kodlayici (encoder): cok sayidaki girdiyi kucuk bir temsile sikistirir
+  (tanh aktivasyon) -> LSTM girdisi kuculur, genom kuculur.
+- LSTM: zamansal hafiza (h, c) -> dolasirken yon/durum hafizasi.
+- Dense cikis: 5 aksiyon skoru -> argmax.
 """
 
 import numpy as np
 
 from config import (
-    INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE,
+    INPUT_SIZE, ENCODER_SIZE, HIDDEN_SIZE, OUTPUT_SIZE,
     ACTION_FORWARD, ACTION_NONE, ACTION_BACK,
 )
 
@@ -24,24 +23,26 @@ def _sigmoid(x):
 
 
 class LSTMPolicy:
-    """Tek bir karincanin beyni."""
+    """Tek bir karincanin beyni: Dense(encoder) -> LSTM -> Dense(cikis)."""
 
     def __init__(self, genome=None, rng=None):
         self.input_size = INPUT_SIZE
+        self.encoder_size = ENCODER_SIZE
         self.hidden_size = HIDDEN_SIZE
         self.output_size = OUTPUT_SIZE
         self.rng = rng or np.random.default_rng()
 
-        I, H, O = self.input_size, self.hidden_size, self.output_size
-        z = I + H  # LSTM girisinde [x ; h_prev] birlestirilir
+        I, E, H, O = INPUT_SIZE, ENCODER_SIZE, HIDDEN_SIZE, OUTPUT_SIZE
+        z = E + H  # LSTM girisinde [encoder_cikti ; h_prev] birlestirilir
 
         # Parametre sekilleri (sirayla genoma serilesir)
         self._shapes = [
+            ("W_e", (E, I)), ("b_e", (E,)),   # Dense kodlayici (LSTM oncesi)
             ("W_i", (H, z)), ("b_i", (H,)),   # input gate
             ("W_f", (H, z)), ("b_f", (H,)),   # forget gate
             ("W_o", (H, z)), ("b_o", (H,)),   # output gate
             ("W_g", (H, z)), ("b_g", (H,)),   # cell candidate
-            ("W_y", (O, H)), ("b_y", (O,)),   # dense cikis
+            ("W_y", (O, H)), ("b_y", (O,)),   # Dense cikis
         ]
         self.params = {}
         if genome is not None:
@@ -95,17 +96,21 @@ class LSTMPolicy:
     def forward(self, x):
         """x: (INPUT_SIZE,) -> aksiyon indeksi (int)."""
         x = np.asarray(x, dtype=np.float32)
-        z = np.concatenate([x, self.h])
         p = self.params
 
+        # Dense kodlayici (LSTM oncesi)
+        e = np.tanh(p["W_e"] @ x + p["b_e"])
+
+        # LSTM
+        z = np.concatenate([e, self.h])
         i = _sigmoid(p["W_i"] @ z + p["b_i"])
         f = _sigmoid(p["W_f"] @ z + p["b_f"])
         o = _sigmoid(p["W_o"] @ z + p["b_o"])
         g = np.tanh(p["W_g"] @ z + p["b_g"])
-
         self.c = f * self.c + i * g
         self.h = o * np.tanh(self.c)
 
+        # Dense cikis
         y = p["W_y"] @ self.h + p["b_y"]
         return int(np.argmax(y))
 

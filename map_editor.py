@@ -82,11 +82,11 @@ class MapEditor:
         y = 90
         self.tool_buttons = []
         tools = [
-            ("1 Besin", C.FOOD, C.COLORS[C.FOOD]),
-            ("2 Tas", C.STONE, C.COLORS[C.STONE]),
-            ("3 Engel", C.OBSTACLE, C.COLORS[C.OBSTACLE]),
-            ("4 Yuva", C.NEST, C.COLORS[C.NEST]),
-            ("0 Sil", C.EMPTY, (50, 50, 55)),
+            ("1 Food", C.FOOD, C.COLORS[C.FOOD]),
+            ("2 Stone", C.STONE, C.COLORS[C.STONE]),
+            ("3 Obstacle", C.OBSTACLE, C.COLORS[C.OBSTACLE]),
+            ("4 Nest", C.NEST, C.COLORS[C.NEST]),
+            ("0 Erase", C.EMPTY, (50, 50, 55)),
         ]
         for label, val, col in tools:
             self.tool_buttons.append(Button(label, x, y, w, 38, value=val, color=col))
@@ -99,9 +99,9 @@ class MapEditor:
         self.amount_box = pygame.Rect(x, y, w, 30)
         y += 42
 
-        self.btn_save = Button("Kaydet (Ctrl+S)", x, y, w, 36, color=(40, 110, 60)); y += 44
-        self.btn_clear = Button("Temizle", x, y, w, 36, color=(120, 60, 40)); y += 44
-        self.btn_border = Button("Cerceve Duvar", x, y, w, 36, color=(70, 60, 50)); y += 44
+        self.btn_save = Button("Save (Ctrl+S)", x, y, w, 36, color=(40, 110, 60)); y += 44
+        self.btn_clear = Button("Clear", x, y, w, 36, color=(120, 60, 40)); y += 44
+        self.btn_border = Button("Border Wall", x, y, w, 36, color=(70, 60, 50)); y += 44
         self.btn_menu = Button("Menu (ESC)", x, y, w, 36, color=(60, 60, 80))
 
     # ----------------------------------------------------------- koordinatlar
@@ -218,22 +218,22 @@ class MapEditor:
         elif self.btn_clear.hit(pos):
             self.grid[:] = C.EMPTY
             self.food_amount[:] = 0
-            self._flash("Harita temizlendi")
+            self._flash("Map cleared")
         elif self.btn_border.hit(pos):
             for sl in (np.s_[0, :], np.s_[-1, :], np.s_[:, 0], np.s_[:, -1]):
                 self.grid[sl] = C.OBSTACLE
                 self.food_amount[sl] = 0
-            self._flash("Cerceve eklendi")
+            self._flash("Border added")
         elif self.btn_menu.hit(pos):
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
 
     def _save(self):
         if not np.any(self.grid == C.NEST):
-            self._flash("UYARI: Yuva yok! Once yuva koy.")
+            self._flash("WARNING: No nest! Place a nest first.")
             return
-        self.food_amount[self.grid != C.FOOD] = 0  # tutarlilik
+        self.food_amount[self.grid != C.FOOD] = 0  # consistency
         World(grid=self.grid.copy(), food_amount=self.food_amount.copy()).save(C.MAP_FILE)
-        self._flash(f"Kaydedildi -> {C.MAP_FILE}")
+        self._flash(f"Saved -> {C.MAP_FILE}")
 
     # ------------------------------------------------------------------- draw
     def _draw(self):
@@ -275,18 +275,18 @@ class MapEditor:
 
     def _draw_panel(self):
         pygame.draw.rect(self.screen, (22, 22, 28), pygame.Rect(0, 0, PANEL_W, C.SCREEN_H))
-        title = self.font.render("HARITA EDITORU", True, (240, 240, 240))
+        title = self.font.render("MAP EDITOR", True, (240, 240, 240))
         self.screen.blit(title, (12, 18))
-        sub = self.small.render(f"Firca: {self.brush}  ([ ])", True, (180, 180, 180))
+        sub = self.small.render(f"Brush: {self.brush}  ([ ])", True, (180, 180, 180))
         self.screen.blit(sub, (12, 44))
-        cur = self.small.render(f"Secili: {C.TILE_NAMES[self.current]}", True, (200, 220, 200))
+        cur = self.small.render(f"Selected: {C.TILE_NAMES[self.current]}", True, (200, 220, 200))
         self.screen.blit(cur, (12, 62))
 
         for b in self.tool_buttons:
             b.draw(self.screen, self.small, active=(b.value == self.current))
 
-        # besin miktari giris kutusu
-        lbl = self.small.render("Besin miktari (tikla-yaz):", True, (200, 220, 200))
+        # food amount input box
+        lbl = self.small.render("Food amount (click-type):", True, (200, 220, 200))
         self.screen.blit(lbl, (12, self.amount_label_y))
         box_col = (40, 80, 50) if self.editing_amount else (45, 45, 52)
         pygame.draw.rect(self.screen, box_col, self.amount_box, border_radius=5)

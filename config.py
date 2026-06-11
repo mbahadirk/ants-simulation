@@ -36,11 +36,11 @@ OBSTACLE = 3     # engel/duvar: gecilmez, "engel" olarak algilanir
 NEST = 4         # yuva
 
 TILE_NAMES = {
-    EMPTY: "Bos",
-    FOOD: "Besin",
-    STONE: "Tas",
-    OBSTACLE: "Engel",
-    NEST: "Yuva",
+    EMPTY: "Empty",
+    FOOD: "Food",
+    STONE: "Stone",
+    OBSTACLE: "Obstacle",
+    NEST: "Nest",
 }
 
 # Hucre renkleri
@@ -58,14 +58,18 @@ BG_COLOR = (15, 38, 15)
 # Karinca / hareket
 # ---------------------------------------------------------------------------
 ANT_SIZE = 18                   # cizim boyutu (piksel)
-MOVE_SPEED = 140.0              # ileri hiz (piksel / saniye) - iki katina cikarildi
-BACK_SPEED = 70.0               # geri hiz - iki katina cikarildi
-TURN_SPEED = 6.0                # donus hizi (radyan / saniye) - daha cevik donus
+MOVE_SPEED = 180.0              # ileri hiz (piksel / saniye)
+BACK_SPEED = 90.0               # geri hiz
+TURN_SPEED = 14.0               # donus hizi (radyan / saniye) - iki katina cikarildi
 
 # Yasam suresi (saniye) -> her karinca icin bu araliktan rastgele secilir
 # K/L tuslariyla dinamik olarak ayarlanabilir (+/- 15sn)
 LIFESPAN_MIN = 150.0
 LIFESPAN_MAX = 180.0
+# Besin BULUNCA omre 1 omur kadar (taban omur) sure eklenir -> forager'lara
+# daha fazla zaman taninir. Toplam omur tabanin bu kadar katiyla sinirli.
+LIFESPAN_FOOD_BONUS = True
+LIFESPAN_MAX_MULT = 4.0        # omur, taban omrun en fazla bu kati olabilir
 
 # Aclik / enerji: besine yeterince uzun sure ulasamayan olur.
 STARVE_TIME = 30.0             # bu kadar saniye besin bulamazsa olur (geri donus icin pay)
@@ -73,12 +77,16 @@ ENERGY_MAX = 1.0
 
 # Cezalar - iki katmanli:
 #  1) Enerji cezasi: ekstra enerji tuketir -> daha cabuk olur (hayatta kalma baskisi)
-WALL_PENALTY_RATE = 0.20       # duvara/tasa carpip ilerleyemeyince saniyelik enerji cezasi
+WALL_PENALTY_RATE = 0.28       # duvara/tasa carpip ilerleyemeyince saniyelik enerji cezasi
 IDLE_PENALTY_RATE = 0.15       # 'bekle' (hicbir sey yapma) aksiyonu saniyelik enerji cezasi
-#  2) Fitness cezasi: dogrudan basari puanini dusurur (secilim baskisi). Asagidaki
-#     yuvaya yaklasma odulu (RETURN_REWARD_W) bu cezalardan BIRAZ DAHA AZ tutulur.
-WALL_FIT_PENALTY = 0.06        # adim basina duvara carpma fitness cezasi
+#  2) Fitness cezasi: dogrudan basari puanini dusurur (secilim baskisi).
+WALL_FIT_PENALTY = 0.10        # adim basina duvara carpma fitness cezasi (arttirildi)
 IDLE_FIT_PENALTY = 0.06        # adim basina sabit durma fitness cezasi
+# En dis cerceveye (harita kenari) carpma EK cezasi (kenara sikismayi onler)
+BORDER_FIT_PENALTY = 0.22      # adim basina ek fitness cezasi (sadece dis cerceve)
+BORDER_PENALTY_RATE = 0.35     # saniyelik ek enerji cezasi (sadece dis cerceve)
+# Besin TASIRKEN yuvadan UZAKLASMA cezasi (piksel basina) -> yemi alip donmeyenler elenir
+CARRY_AWAY_PENALTY_W = 0.05
 
 # ---------------------------------------------------------------------------
 # Gorus (180 derece SEKTOR tabanli, okluzyonlu)
@@ -122,11 +130,18 @@ PH_HOME = 0
 PH_FOOD = 1
 PH_DEPOSIT_HOME = 3.0       # adim basina home feromon birakimi
 PH_DEPOSIT_FOOD = 14.0      # adim basina food feromon birakimi
+# Cok besin teslim etmis (basarili) karincalar DAHA GUCLU iz birakir:
+# birakim = PH_DEPOSIT_FOOD * (1 + food_delivered * PH_SUCCESS_FACTOR)
+PH_SUCCESS_FACTOR = 0.5
 # Besin feromonu IZ UZUNLUGU: besin aldiktan sonra bu mesafe boyunca birakilir.
-PH_FOOD_TRAIL_DIST = 1500.0  # piksel (~75 hucre) - 5 katina cikarildi (uzun iz)
-PH_HOME_EVAPORATION = 0.06   # home feromonu saniyelik buharlasma orani (daha hizli - alan daralir)
-PH_FOOD_EVAPORATION = 0.005  # besin feromonu saniyelik buharlasma orani (cok yavas - iz kalici olur)
+PH_FOOD_TRAIL_DIST = 1500.0  # piksel (~75 hucre)
+PH_HOME_EVAPORATION = 0.06   # home feromonu saniyelik buharlasma orani
+PH_FOOD_EVAPORATION = 0.005  # besin feromonu saniyelik buharlasma orani (yavas)
 PH_MAX = 200.0              # feromon tavani (normalize icin)
+# "Super iz" (yogun besin yolu): esigin ustundeki guclu izler COK daha yavas
+# buharlasir ve MOR renge doner -> sik kullanilan besin yollari kalici olur.
+PH_FOOD_STRONG_THRESH = 110.0   # bu yogunlugun ustu "super iz" sayilir
+PH_FOOD_STRONG_EVAP_MULT = 0.12 # super izde buharlasma carpani (cok yavas)
 # Yayilim (difuzyon) izleri genisletir -> yon algisini bozar. Cok seyrek tutulur
 # ki izler KESKIN kalsin ve karincalar yonu (sol/orta/sag anten) ayirt edebilsin.
 PH_DIFFUSE_EVERY = 8.0      # neredeyse kapali (sadece cok nadir hafif yumusatma)
@@ -138,7 +153,8 @@ PH_DIFFUSE_EVERY = 8.0      # neredeyse kapali (sadece cok nadir hafif yumusatma
 # bir gradyan olusturur. Cok-kaynakli BFS ile besine olan (duvarlardan
 # dolanarak) mesafe hesaplanir; koku = 1 - mesafe/menzil. Boylece koku
 # HARITA BOYUNCA yayilir ve karincalar yogunlugu tirmanip besini bulur.
-ODOR_RANGE_CELLS = 13       # koku menzili (hucre) - kucuk -> koku yerel/anlamli kalir
+ODOR_RANGE_CELLS = 25       # koku menzili (hucre). Buyut -> besin bulmak kolaylasir
+                            # (uzun menzilli arama sinyali), kucult -> daha yerel.
 ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # koku ornekleme mesafesi (anten araligi)
 
 # ---------------------------------------------------------------------------
@@ -155,9 +171,13 @@ FOOD_SPAWN_INTERVAL = 60.0
 FOOD_SPAWN_AMOUNT = 5
 
 # ---------------------------------------------------------------------------
-# Sinir agi (LSTM + feedforward)
+# Sinir agi:  girdi -> Dense(encoder) -> LSTM -> Dense(cikis) -> argmax
 # ---------------------------------------------------------------------------
-HIDDEN_SIZE = 16
+# LSTM'den ONCE bir Dense kodlayici: cok sayidaki girdiyi (86) daha kucuk,
+# anlamli bir temsile sikistirir -> LSTM girdisi kuculur, genom kuculur,
+# GA icin arama uzayi daralir (daha hizli evrim).
+ENCODER_SIZE = 24               # LSTM oncesi Dense kodlayici boyutu
+HIDDEN_SIZE = 16                # LSTM gizli katman boyutu
 OUTPUT_SIZE = 5                  # 0:hicbiri 1:ileri 2:geri 3:sol 4:sag
 
 ACTION_NONE = 0
@@ -166,25 +186,25 @@ ACTION_BACK = 2
 ACTION_LEFT = 3
 ACTION_RIGHT = 4
 ACTION_NAMES = {
-    ACTION_NONE: "bekle",
-    ACTION_FORWARD: "ileri",
-    ACTION_BACK: "geri",
-    ACTION_LEFT: "sol",
-    ACTION_RIGHT: "sag",
+    ACTION_NONE: "wait",
+    ACTION_FORWARD: "forward",
+    ACTION_BACK: "back",
+    ACTION_LEFT: "left",
+    ACTION_RIGHT: "right",
 }
 
 # ---------------------------------------------------------------------------
 # Genetik algoritma
 # ---------------------------------------------------------------------------
 INITIAL_POP = 40                # baslangic karinca sayisi
-MIN_POP = 20                    # bu sayinin altina dusulurse takviye
+MIN_POP = 15                    # bu sayinin altina dusulurse takviye
 MAX_POP = 80                    # ust sinir
 # Ureme: yuvaya besin getiren HER karincadan, o karincanin genomundan
 # (mutasyonla) OFFSPRING_PER_DELIVERY adet yavru dogar.
-OFFSPRING_PER_DELIVERY = 3      # her teslim eden karincadan kac yavru
+OFFSPRING_PER_DELIVERY = 5      # her teslim eden karincadan kac yavru
 N_PARENTS = 3                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
-MUTATION_RATE = 0.08            # gen basina mutasyon olasiligi
-MUTATION_SCALE = 0.20           # mutasyon gauss siddeti
+MUTATION_RATE = 0.06            # gen basina mutasyon olasiligi (dusuk -> kararli rafine)
+MUTATION_SCALE = 0.14           # mutasyon gauss siddeti
 
 # Fitness takviyesi: populasyon dususte rastgele yerine TUM ZAMANLARIN EN IYI
 # karincalarindan (hall of fame) ureme yapilir. Olen karincalarin yerine
@@ -192,9 +212,13 @@ MUTATION_SCALE = 0.20           # mutasyon gauss siddeti
 FITNESS_REINFORCE = True
 HALL_OF_FAME_SIZE = 12         # tum zamanlarin en iyi N karincasi saklanir
 HOF_OFFER_EVERY = 0.5          # yasayan en iyi karinca bu sikligla onur listesine sunulur
-# fitness = teslim*DELIVER_W + bulunan*FIND_W + odul_sekillendirme
+# fitness = teslim*DELIVER_W + (mesafeye gore besin bulma) + odul_sekillendirme
 FITNESS_DELIVER_W = 10.0
-FITNESS_FIND_W = 3.0
+# Besin bulma odulu YUVADAN UZAKLIGA gore olceklenir: yuvaya yakin besin az,
+# uzaktaki besin cok odul verir. Bu, yuva etrafinda donen karincalar yerine
+# gercek FORAGER'lari (uzaga gidip besin toplayan) secer.
+FITNESS_FIND_BASE = 1.0        # her bulmada sabit kucuk odul
+FITNESS_FIND_DIST_W = 0.03     # piksel basina ek odul (yuvadan uzaklik)
 
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
 # Karincalar tam teslimat/bulma olmadan da DOGRU YONDE ILERLEDIKCE puan alir,
@@ -203,7 +227,9 @@ FITNESS_FIND_W = 3.0
 # Yuvaya yaklasma odulu artirildi ama adim basina katkisi (~0.047) iki fitness
 # cezasindan (0.06) BIRAZ DAHA AZ kalacak sekilde ayarlandi.
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
-FORAGE_REWARD_W = 2.5          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
+# Koku takibini OGRETEN odul: bos gezerken besin kokusunu tirmandikca puan.
+# Guclendirildi ki karincalar kokuyu takip etmeyi ogrensin.
+FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
 
 # ---------------------------------------------------------------------------
 # Kayit (recording)
@@ -216,4 +242,12 @@ RECORD_FPS = 30
 # ---------------------------------------------------------------------------
 MAP_FILE = "maps/default_map.json"
 ANT_IMAGE = "ant.png"
-CHECKPOINT_FILE = "sim_checkpoint.pkl"   # H tusu ile kaydedilen simulasyon durumu
+CHECKPOINT_FILE = "sim_checkpoint.pkl"   # (eski) tekil kayit
+DEMO_DIR = "demos"                       # H ile kaydedilen demolar (gecmis tutulur)
+
+# ---------------------------------------------------------------------------
+# Istatistik (zaman serisi - T tusu ile gorsellestirilir)
+# ---------------------------------------------------------------------------
+STATS_SAMPLE_INTERVAL = 2.0     # bu kadar sim-saniyesinde bir anlik veri kaydet
+STATS_RATE_WINDOW = 10.0        # oran grafikleri icin pencere (saniye) - "her 10 sn"
+STATS_EXPORT_DIR = "stats_exports"   # E tusu ile disa aktarilan grafik/CSV klasoru

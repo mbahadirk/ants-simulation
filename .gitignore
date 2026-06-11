@@ -1,3 +1,4 @@
 /.claude
 /.venv
 /recordings
+/__pycache__

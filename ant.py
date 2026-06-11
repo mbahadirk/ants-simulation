@@ -39,6 +39,7 @@ class Ant:
         self.energy = C.ENERGY_MAX
         self.age = 0.0
         self.lifespan = float(self.rng.uniform(C.LIFESPAN_MIN, C.LIFESPAN_MAX))
+        self.base_lifespan = self.lifespan   # besin bulunca buna gore uzatilir
         self.carrying = False
         self.alive = True
         self.generation = generation
@@ -52,6 +53,7 @@ class Ant:
         # odul sekillendirme (reward shaping)
         self.fitness_bonus = 0.0       # ilerleme odullerinin toplami
         self.min_home_dist = None      # tasirken yuvaya ulasilan en kucuk mesafe
+        self.prev_home_dist = None     # tasirken bir onceki adimin yuva mesafesi
         self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
         self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
 
@@ -71,8 +73,8 @@ class Ant:
         return self.brain.get_genome()
 
     def fitness(self):
+        # Not: besin bulma odulu (mesafeye gore) fitness_bonus icine eklenir.
         return (self.food_delivered * C.FITNESS_DELIVER_W
-                + self.food_found * C.FITNESS_FIND_W
                 + self.fitness_bonus)
 
     # -------------------------------------------------------------- sensorler
@@ -236,6 +238,12 @@ class Ant:
             self.energy -= C.WALL_PENALTY_RATE * dt
             self.fitness_bonus -= C.WALL_FIT_PENALTY
             self.wall_hits += 1
+            # en dis cerceveye (harita kenari) carptiysa EK ceza
+            cs = C.CELL_SIZE
+            if (self.x < cs or self.x > C.WORLD_W - cs
+                    or self.y < cs or self.y > C.WORLD_H - cs):
+                self.energy -= C.BORDER_PENALTY_RATE * dt
+                self.fitness_bonus -= C.BORDER_FIT_PENALTY
         # 'bekle' (sabit durma) cezasi
         if action == C.ACTION_NONE:
             self.energy -= C.IDLE_PENALTY_RATE * dt
@@ -249,9 +257,16 @@ class Ant:
             self.food_found += 1
             events["picked"] = True
             self.carry_distance = 0.0   # kisa feromon izi icin sifirla
-            # geri donus odulu icin baslangic mesafesini kaydet
-            self.min_home_dist = np.hypot(self.x - world.nest_pos[0],
-                                          self.y - world.nest_pos[1])
+            # besin bulundugu yer yuvadan ne kadar uzaksa o kadar cok odul
+            dnest = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            self.fitness_bonus += C.FITNESS_FIND_BASE + dnest * C.FITNESS_FIND_DIST_W
+            # geri donus odulu icin baslangic mesafelerini kaydet
+            self.min_home_dist = dnest
+            self.prev_home_dist = dnest
+            # besin bulan karincaya 1 omur (taban) kadar ek sure
+            if C.LIFESPAN_FOOD_BONUS:
+                self.lifespan = min(self.lifespan + self.base_lifespan,
+                                    self.base_lifespan * C.LIFESPAN_MAX_MULT)
 
         # --- yuvaya teslim ---
         if self.carrying and world.at_nest(self.x, self.y):
@@ -260,15 +275,20 @@ class Ant:
             self.food_delivered += 1
             events["delivered"] = True
             self.min_home_dist = None
+            self.prev_home_dist = None
             self.max_odor_seen = 0.0    # yeni arayis basliyor
 
         # --- odul sekillendirme: dogru yonde ilerlemeyi odullendir ---
         if self.carrying:
-            # besin tasirken yuvaya YENI en yakin mesafeye ulastiysa odul
             home_dist = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            # yuvaya YENI en yakin mesafeye ulastiysa odul
             if self.min_home_dist is not None and home_dist < self.min_home_dist:
                 self.fitness_bonus += (self.min_home_dist - home_dist) * C.RETURN_REWARD_W
                 self.min_home_dist = home_dist
+            # besin tasirken yuvadan UZAKLASTIYSA ceza (yemi alip donmeyenler elenir)
+            if self.prev_home_dist is not None and home_dist > self.prev_home_dist:
+                self.fitness_bonus -= (home_dist - self.prev_home_dist) * C.CARRY_AWAY_PENALTY_W
+            self.prev_home_dist = home_dist
         else:
             # bos gezerken besin kokusunu YENI en yuksek seviyeye tirmandiysa odul
             if self.last_odor > self.max_odor_seen:
@@ -277,11 +297,14 @@ class Ant:
 
         # --- feromon birak (antenle koklananin kaynagi) ---
         if self.carrying:
-            # besin feromonu YALNIZCA besin aldiktan sonraki kisa mesafe boyunca
-            # birakilir (iz besin kaynagina yakin ve kisa kalir).
+            # besin feromonu besin aldiktan sonraki belli mesafe boyunca birakilir.
+            # COK besin teslim etmis (basarili) karincalar DAHA GUCLU iz birakir ->
+            # sik kullanilan besin yollari "super iz"e (mor) doner.
             self.carry_distance += disp
             if self.carry_distance <= C.PH_FOOD_TRAIL_DIST:
-                world.deposit(C.PH_FOOD, self.x, self.y, C.PH_DEPOSIT_FOOD * dt * 60)
+                strength = 1.0 + self.food_delivered * C.PH_SUCCESS_FACTOR
+                world.deposit(C.PH_FOOD, self.x, self.y,
+                              C.PH_DEPOSIT_FOOD * strength * dt * 60)
         else:
             world.deposit(C.PH_HOME, self.x, self.y, C.PH_DEPOSIT_HOME * dt * 60)
 

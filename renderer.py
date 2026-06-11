@@ -90,19 +90,21 @@ class Renderer:
         pygame.draw.circle(surf, C.COLORS[C.NEST], (int(nx), int(ny)), int(nr), max(2, int(nr * 0.15)))
 
     def _draw_fields(self, surf, world, camera, debug=False):
-        """Feromon izleri (kirmizi=besin izi, mavi=home izi) + besin kokusu (sari)."""
+        """Feromon: kirmizi=besin izi, MOR=super besin izi, mavi=home izi, sari=koku."""
         # (GRID_H, GRID_W) -> (GRID_W, GRID_H) make_surface icin
         home = np.clip(world.ph_home / C.PH_MAX, 0, 1).T
         food = np.clip(world.ph_food / C.PH_MAX, 0, 1).T
         odor = np.clip(world.food_odor, 0, 1).T
-        # debug'da koku daha belirgin gorunsun
+        # super iz (esik ustu yogun besin yolu) -> mor renk icin mavi bilesen
+        denom = max(1.0, C.PH_MAX - C.PH_FOOD_STRONG_THRESH)
+        strong = np.clip((world.ph_food - C.PH_FOOD_STRONG_THRESH) / denom, 0, 1).T
         odor_gain = 170 if debug else 105
         if home.max() <= 0 and food.max() <= 0 and odor.max() <= 0:
             return
         arr = np.zeros((C.GRID_W, C.GRID_H, 3), dtype=np.uint8)
         arr[..., 0] = np.clip(food * 235 + odor * odor_gain * 0.9, 0, 255).astype(np.uint8)      # R: besin izi + koku
-        arr[..., 1] = np.clip(food * 70 + home * 30 + odor * odor_gain * 0.8, 0, 255).astype(np.uint8)  # G: koku + izler
-        arr[..., 2] = np.clip(home * 215, 0, 255).astype(np.uint8)                              # B: home izi
+        arr[..., 1] = np.clip(food * 70 + home * 30 + odor * odor_gain * 0.8, 0, 255).astype(np.uint8)  # G
+        arr[..., 2] = np.clip(home * 215 + strong * 230, 0, 255).astype(np.uint8)               # B: home izi + super iz (mor)
         small = pygame.surfarray.make_surface(arr)
         tw = max(1, int(C.WORLD_W * camera.zoom))
         th = max(1, int(C.WORLD_H * camera.zoom))
@@ -170,11 +172,11 @@ class Renderer:
     def draw_hud(self, surf, sim, camera, debug, recorder, paused=False, speed=1.0):
         st = sim.stats()
         lines = [
-            f"Karinca: {st['pop']}   Tasiyan: {st['carrying']}",
-            f"Teslim: {st['delivered']}   Dogum: {st['births']}   Olum: {st['deaths']}",
-            f"Nesil: {st['generation']}   Besin: {st['food_left']}   Sure: {int(st['time'])}s",
-            f"Onur listesi: {st['hof_size']}   En iyi fitness: {st['hof_best']:.1f}",
-            f"Zoom: x{camera.zoom:.1f}   Speed: x{speed:g}   Omur: {int(C.LIFESPAN_MIN)}-{int(C.LIFESPAN_MAX)}s",
+            f"Ants: {st['pop']}   Carrying: {st['carrying']}",
+            f"Delivered: {st['delivered']}   Births: {st['births']}   Deaths: {st['deaths']}",
+            f"Generation: {st['generation']}   Food: {st['food_left']}   Time: {int(st['time'])}s",
+            f"Hall of fame: {st['hof_size']}   Best fitness: {st['hof_best']:.1f}",
+            f"Zoom: x{camera.zoom:.1f}   Speed: x{speed:g}   Lifespan: {int(C.LIFESPAN_MIN)}-{int(C.LIFESPAN_MAX)}s",
         ]
         y = 8
         for ln in lines:
@@ -188,15 +190,15 @@ class Renderer:
             pygame.draw.circle(surf, (230, 50, 50), (C.SCREEN_W - 80, 36), 7)
             self._text(surf, f"REC ({recorder.backend})", C.SCREEN_W - 65, 28, (230, 80, 80))
         if paused:
-            self._text(surf, "DURAKLATILDI (space)", C.SCREEN_W // 2 - 110, 10, (255, 220, 120))
+            self._text(surf, "PAUSED (space)", C.SCREEN_W // 2 - 90, 10, (255, 220, 120))
 
-        # secili karinca paneli
+        # selected ant panel
         if debug and sim.selected is not None:
             self._draw_ant_panel(surf, sim.selected)
 
-        # yardim
-        help_txt = ("D:debug  Z:zoom  O/P:hiz-/+  K/L:omur-/+  S:kayit  Space:duraklat  "
-                    "Ok:pan  Tik:secim  R:reset  ESC:menu")
+        # help
+        help_txt = ("D:debug  Z:zoom  O/P:speed  K/L:lifespan  T:stats  H:save-demo  "
+                    "S:record  Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
         self._text(surf, help_txt, 10, C.SCREEN_H - 22, (150, 150, 150))
 
     def _draw_ant_panel(self, surf, ant):
@@ -205,15 +207,15 @@ class Renderer:
         panel.fill((20, 20, 30, 210))
         surf.blit(panel, (x0, y0))
         info = [
-            (f"ID: {ant.id}  Nesil: {ant.generation}", (220, 220, 230)),
-            (f"Yas: {ant.age:.1f}/{ant.lifespan:.0f}s", (220, 220, 230)),
-            (f"Enerji: {max(0,ant.energy):.2f}", (220, 220, 230)),
-            (f"Tasiyor: {'evet' if ant.carrying else 'hayir'}", (220, 220, 230)),
-            (f"Bulunan: {ant.food_found}  Teslim: {ant.food_delivered}", (220, 220, 230)),
-            (f"Aksiyon: {C.ACTION_NAMES[ant.last_action]}", (220, 220, 230)),
-            (f"Koku algi: {ant.last_odor:.2f}", (120, 230, 120)),
-            (f"Food feromon: {ant.last_food_ph:.2f}", (230, 130, 130)),
-            (f"Duvar carpma: {ant.wall_hits}  Bekle: {ant.idle_steps}", (230, 200, 130)),
+            (f"ID: {ant.id}  Gen: {ant.generation}", (220, 220, 230)),
+            (f"Age: {ant.age:.1f}/{ant.lifespan:.0f}s", (220, 220, 230)),
+            (f"Energy: {max(0,ant.energy):.2f}", (220, 220, 230)),
+            (f"Carrying: {'yes' if ant.carrying else 'no'}", (220, 220, 230)),
+            (f"Found: {ant.food_found}  Delivered: {ant.food_delivered}", (220, 220, 230)),
+            (f"Action: {C.ACTION_NAMES[ant.last_action]}", (220, 220, 230)),
+            (f"Odor sense: {ant.last_odor:.2f}", (120, 230, 120)),
+            (f"Food pheromone: {ant.last_food_ph:.2f}", (230, 130, 130)),
+            (f"Wall hits: {ant.wall_hits}  Idle: {ant.idle_steps}", (230, 200, 130)),
         ]
         yy = y0 + 8
         for ln, col in info:

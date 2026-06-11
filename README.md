@@ -27,7 +27,9 @@ otomatik olarak PNG kare dizisi olarak alınır).
 | **Z** | Zoom seviyesi (x1 → x1.6 → x2.5 → x4) — **fare imlecine doğru** |
 | **Fare tekeri** | Kademe kademe yakınlaş/uzaklaş (imlece doğru) |
 | **O / P** | Simülasyon hızı: **O** yarıya indir, **P** iki katına çıkar (x0.25–x16). HUD'da "Speed" |
-| **K / L** | Karınca ömrü: **K** 15 sn azalt, **L** 15 sn artır (varsayılan 150–180 sn). HUD'da "Omur" |
+| **K / L** | Karınca ömrü: **K** 15 sn azalt, **L** 15 sn artır (varsayılan 150–180 sn). HUD'da "Lifespan" |
+| **T** | Eğitim istatistik grafikleri: **doğum/ölüm (10 sn başına)**, doğum/ölüm (kümülatif), **teslim (10 sn başına)**, en iyi fitness. Grafik ekranında **E** ile PNG+CSV dışa aktarım (`stats_exports/`) |
+| **H** | Demo olarak kaydet — her seferinde **yeni** zaman damgalı dosya (`demos/`), eskiler silinmez. Menüde **Demo History** |
 | **S** | Ekran kaydını başlat / durdur (`recordings/` klasörüne) |
 | **Space** | Duraklat / devam |
 | **Ok tuşları** | Haritada gez (pan) |
@@ -53,7 +55,7 @@ otomatik olarak PNG kare dizisi olarak alınır).
 ## Nasıl çalışır?
 
 ### Sinir ağı (saf NumPy, backprop yok)
-`girdi → LSTM(16) → Dense(5) → argmax → aksiyon`
+`girdi → Dense(encoder,24) → LSTM(16) → Dense(5) → argmax → aksiyon`
 
 - **Aksiyonlar:** `bekle, ileri, geri, sol, sağ` (yalnızca bu 5'i).
 - Her karıncanın kendi LSTM gizli durumu vardır → zamansal hafıza.
