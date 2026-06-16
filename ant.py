@@ -2,7 +2,7 @@
 Karinca varligi.
 
 Her karincanin: konumu, yon acisi (heading), enerjisi, yasi, yasam suresi,
-bir beyni (LSTMPolicy) ve onundeki 180 derecelik sektor tabanli gorusu vardir.
+bir beyni (MLP veya LSTM; config.BRAIN_ARCH) ve 180 derecelik sektor gorusu vardir.
 
 Sensor -> beyin (forward) -> aksiyon (ileri/geri/sol/sag/bekle) -> hareket.
 Hareket sirasinda tas/engel gecilemez; besin alinir, yuvaya teslim edilir.
@@ -11,7 +11,7 @@ Hareket sirasinda tas/engel gecilemez; besin alinir, yuvaya teslim edilir.
 import numpy as np
 
 import config as C
-from neural_network import LSTMPolicy
+from neural_network import make_brain
 
 # Nesne tipi -> sektor one-hot indeksi (0:besin 1:engelli[tas|engel] 2:karinca)
 # Yuva goruten cikarildi (homing girdisi zaten karsilar); tas+engel "engelli"de birlesti.
@@ -35,7 +35,7 @@ class Ant:
         self.y = float(y)
         self.heading = float(self.rng.uniform(0, 2 * np.pi))
 
-        self.brain = LSTMPolicy(genome=genome, rng=self.rng)
+        self.brain = make_brain(genome=genome, rng=self.rng)
 
         self.energy = C.ENERGY_MAX
         self.age = 0.0
@@ -56,7 +56,9 @@ class Ant:
         self.min_home_dist = None      # tasirken yuvaya ulasilan en kucuk mesafe
         self.prev_home_dist = None     # tasirken bir onceki adimin yuva mesafesi
         self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
+        self.max_food_ph_seen = 0.0    # bos gezerken ulasilan en guclu food-feromon izi
         self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
+        self.last_find_dist = 0.0      # son bulunan besinin yuvadan uzakligi (teslim odulu icin)
 
         # debug icin son gorulen nesneler: (tip, x, y, dist)
         self.last_seen = []
@@ -74,9 +76,9 @@ class Ant:
         return self.brain.get_genome()
 
     def fitness(self):
-        # Not: besin bulma odulu (mesafeye gore) fitness_bonus icine eklenir.
-        return (self.food_delivered * C.FITNESS_DELIVER_W
-                + self.fitness_bonus)
+        # Tum oduller (teslim mesafeye gore, bulma, iz/koku takibi, geri donus)
+        # ve cezalar fitness_bonus icinde toplanir -> tek kaynak, cift sayim yok.
+        return self.fitness_bonus
 
     # -------------------------------------------------------------- sensorler
     def sense(self, world, neighbors):
@@ -177,33 +179,47 @@ class Ant:
         # debug oku icin dunya koordinatlarinda yuva yonu (renderer kullanir)
         self._homing_world_angle = float(np.arctan2(ndy, ndx))
 
-        # --- feromon antenleri (sol/orta/sag x home/food) ---
-        ph = np.zeros(C.PHEROMONE_INPUTS, dtype=np.float32)
-        i = 0
-        for off in C.PH_SAMPLE_ANGLES:
-            ang = self.heading + off
-            px = self.x + np.cos(ang) * C.PH_SAMPLE_DIST
-            py = self.y + np.sin(ang) * C.PH_SAMPLE_DIST
-            ph[i] = world.sample(C.PH_HOME, px, py)
-            ph[i + 1] = world.sample(C.PH_FOOD, px, py)
-            i += 2
+        # --- kimyasal alanlar: GRADYAN-YON algilama (koku + feromon) ---
+        # Eski 3-nokta yontemi alan doygunken duzlestir -> yon yok. Yeni yontem:
+        # alanin yerel gradyanini (yokus-yukari yonu) hesaplar ve heading'e gore
+        # (sin, cos) + buyukluk olarak verir -> alan seviyesinden bagimsiz NET yon.
+        cosh = np.cos(self.heading)
+        sinh = np.sin(self.heading)
 
-        # --- besin kokusu antenleri (sol/orta/sag) ---
-        odor = np.zeros(C.ODOR_INPUTS, dtype=np.float32)
-        for j, off in enumerate(C.PH_SAMPLE_ANGLES):
-            ang = self.heading + off
-            px = self.x + np.cos(ang) * C.ODOR_SAMPLE_DIST
-            py = self.y + np.sin(ang) * C.ODOR_SAMPLE_DIST
-            odor[j] = world.sample_odor(px, py)
+        def _grad_rel(arr):
+            gx, gy = world.field_gradient(arr, self.x, self.y)
+            mag = np.hypot(gx, gy)
+            if mag < 1e-12:
+                return 0.0, 0.0, 0.0
+            ux, uy = gx / mag, gy / mag
+            rel_cos = ux * cosh + uy * sinh       # heading dogrultusu bileseni
+            rel_sin = -ux * sinh + uy * cosh      # heading'e dik (sol/sag) bilesen
+            mnorm = min(1.0, mag * C.CHEM_GRAD_NORM)
+            return float(rel_sin), float(rel_cos), float(mnorm)
+
+        # besin kokusu: yokus-yukari yon (sin,cos) + buyukluk + yerel deger
+        o_sin, o_cos, o_mag = _grad_rel(world.food_odor)
+        o_local = world._bilinear(world.food_odor, self.x, self.y)
+        odor = np.array([o_sin, o_cos, o_mag, o_local], dtype=np.float32)
+
+        # food feromonu (iz): yokus-yukari yon (sin,cos) + yerel deger (0..1)
+        f_sin, f_cos, _f_mag = _grad_rel(world.ph_food)
+        f_local = min(1.0, world._bilinear(world.ph_food, self.x, self.y) / C.PH_MAX)
+        ph_food_in = np.array([f_sin, f_cos, f_local], dtype=np.float32)
+
+        # home feromonu: sadece yerel deger (homing zaten yon veriyor)
+        h_local = min(1.0, world._bilinear(world.ph_home, self.x, self.y) / C.PH_MAX)
+        ph_home_in = np.array([h_local], dtype=np.float32)
+
         # debug paneli icin: karincanin gercekten algiladigi degerler
-        self.last_odor = float(odor.max())
-        self.last_food_ph = float(ph[1::2].max()) if C.PHEROMONE_INPUTS else 0.0
+        self.last_odor = float(o_local)
+        self.last_food_ph = float(f_local)
 
         extra = np.array([
             1.0 if self.carrying else 0.0,
             self.energy,
         ], dtype=np.float32)
-        return np.concatenate([feats, homing, ph, odor, extra])
+        return np.concatenate([feats, homing, ph_food_in, ph_home_in, odor, extra])
 
     # --------------------------------------------------------------- guncelle
     def update(self, dt, world, neighbors):
@@ -263,6 +279,7 @@ class Ant:
             # besin bulundugu yer yuvadan ne kadar uzaksa o kadar cok odul
             dnest = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
             self.fitness_bonus += C.FITNESS_FIND_BASE + dnest * C.FITNESS_FIND_DIST_W
+            self.last_find_dist = dnest    # teslim odulunu mesafeye gore olceklemek icin
             # geri donus odulu icin baslangic mesafelerini kaydet
             self.min_home_dist = dnest
             self.prev_home_dist = dnest
@@ -277,9 +294,13 @@ class Ant:
             self.energy = C.ENERGY_MAX
             self.food_delivered += 1
             events["delivered"] = True
+            # teslim odulu MESAFEYE gore olceklenir: uzaktan getirmek cok daha degerli
+            self.fitness_bonus += (C.FITNESS_DELIVER_W
+                                   + self.last_find_dist * C.FITNESS_DELIVER_DIST_W)
             self.min_home_dist = None
             self.prev_home_dist = None
-            self.max_odor_seen = 0.0    # yeni arayis basliyor
+            self.max_odor_seen = 0.0      # yeni arayis basliyor
+            self.max_food_ph_seen = 0.0   # iz takip ratchet'i sifirla
 
         # --- odul sekillendirme: dogru yonde ilerlemeyi odullendir ---
         if self.carrying:
@@ -297,6 +318,12 @@ class Ant:
             if self.last_odor > self.max_odor_seen:
                 self.fitness_bonus += (self.last_odor - self.max_odor_seen) * C.FORAGE_REWARD_W
                 self.max_odor_seen = self.last_odor
+            # IZ TAKIP odulu: daha GUCLU bir food-feromon izine ulastiysa odul.
+            # Ratchet (sadece yeni en yuksek) -> yerinde salinarak farm edilemez;
+            # gercekten basarili karincalarin birden izine girmeyi odullendirir.
+            if self.last_food_ph > self.max_food_ph_seen:
+                self.fitness_bonus += (self.last_food_ph - self.max_food_ph_seen) * C.TRAIL_FOLLOW_W
+                self.max_food_ph_seen = self.last_food_ph
 
         # --- feromon birak (antenle koklananin kaynagi) ---
         if self.carrying:

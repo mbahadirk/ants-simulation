@@ -72,19 +72,21 @@ LIFESPAN_FOOD_BONUS = True
 LIFESPAN_MAX_MULT = 4.0        # omur, taban omrun en fazla bu kati olabilir
 
 # Aclik / enerji: besine yeterince uzun sure ulasamayan olur.
-STARVE_TIME = 30.0             # bu kadar saniye besin bulamazsa olur (geri donus icin pay)
+STARVE_TIME = 40.0             # bu kadar saniye besin bulamazsa olur (30'dan artirildi)
 ENERGY_MAX = 1.0
 
 # Cezalar - iki katmanli:
 #  1) Enerji cezasi: ekstra enerji tuketir -> daha cabuk olur (hayatta kalma baskisi)
-WALL_PENALTY_RATE = 0.28       # duvara/tasa carpip ilerleyemeyince saniyelik enerji cezasi
-IDLE_PENALTY_RATE = 0.15       # 'bekle' (hicbir sey yapma) aksiyonu saniyelik enerji cezasi
+#     Eski degerler cok sert oldurorduyu (duvara yasli ~8 sn'de olum) -> yumusatildi;
+#     secilim baskisinin agirligi FITNESS cezalarina kaydirildi (puanla elenir, olmez).
+WALL_PENALTY_RATE = 0.08       # duvara/tasa carpinca saniyelik enerji cezasi (0.28'den)
+IDLE_PENALTY_RATE = 0.0        # 'bekle' aksiyonu enerji TUKETMEZ (sadece fitness cezasi)
 #  2) Fitness cezasi: dogrudan basari puanini dusurur (secilim baskisi).
-WALL_FIT_PENALTY = 0.10        # adim basina duvara carpma fitness cezasi (arttirildi)
+WALL_FIT_PENALTY = 0.10        # adim basina duvara carpma fitness cezasi
 IDLE_FIT_PENALTY = 0.06        # adim basina sabit durma fitness cezasi
 # En dis cerceveye (harita kenari) carpma EK cezasi (kenara sikismayi onler)
 BORDER_FIT_PENALTY = 0.22      # adim basina ek fitness cezasi (sadece dis cerceve)
-BORDER_PENALTY_RATE = 0.35     # saniyelik ek enerji cezasi (sadece dis cerceve)
+BORDER_PENALTY_RATE = 0.10     # saniyelik ek enerji cezasi (0.35'ten dusuruldu)
 # Besin TASIRKEN yuvadan UZAKLASMA cezasi (piksel basina) -> yemi alip donmeyenler elenir
 CARRY_AWAY_PENALTY_W = 0.05
 
@@ -108,13 +110,21 @@ RAY_STEP = 6.0                  # (eski raycast yardimcisi icin)
 # Homing (yon butunleme): yuva yonu (sin, cos) + normalize mesafe
 HOMING_INPUTS = 3
 
-# Feromon antenleri: 3 yon (sol/orta/sag) x 2 alan (home/food) = 6
-PH_SAMPLE_ANGLES = (-0.55, 0.0, 0.55)   # heading'e gore (radyan)
-PH_SAMPLE_DIST = 1.5 * CELL_SIZE        # antenin onunden ornek alma mesafesi
-PHEROMONE_INPUTS = len(PH_SAMPLE_ANGLES) * 2
+# Kimyasal alan algilama (koku + feromon): ESKI yontem 3 ham nokta ornekliyordu;
+# alan neredeyse her yerde doygun oldugu icin sol/orta/sag farki ~0 -> takip
+# edilebilir yon yoktu. YENI yontem: alanin yerel GRADYANINI (yokus-yukari yonu)
+# hesaplar ve ag'a heading'e gore (sin, cos) + buyukluk olarak verir. Boylece
+# alan seviyesi ne olursa olsun NET bir yonlendirme sinyali olusur.
+CHEM_GRAD_STEP = CELL_SIZE       # gradyan merkezi-fark adimi (piksel) ~1 hucre
+CHEM_GRAD_NORM = 120.0           # gradyan buyuklugu normalizasyon carpani (~0..1 araligi)
 
-# Besin kokusu antenleri: ayni 3 yonde besin koku gradyani = 3
-ODOR_INPUTS = len(PH_SAMPLE_ANGLES)
+# Besin kokusu: yokus-yukari yon (sin, cos) + buyukluk + yerel deger = 4
+ODOR_INPUTS = 4
+# Food feromonu (iz takibi): yokus-yukari yon (sin, cos) + yerel deger = 3
+PH_FOOD_INPUTS = 3
+# Home feromonu: yerel deger (homing zaten yon veriyor, fazlasi gereksiz) = 1
+PH_HOME_INPUTS = 1
+PHEROMONE_INPUTS = PH_FOOD_INPUTS + PH_HOME_INPUTS
 
 # Ek girisler: tasiyor_mu, enerji
 EXTRA_INPUTS = 2
@@ -135,9 +145,13 @@ PH_DEPOSIT_FOOD = 14.0      # adim basina food feromon birakimi
 # birakim = PH_DEPOSIT_FOOD * (1 + food_delivered * PH_SUCCESS_FACTOR)
 PH_SUCCESS_FACTOR = 0.5
 # Besin feromonu IZ UZUNLUGU: besin aldiktan sonra bu mesafe boyunca birakilir.
-PH_FOOD_TRAIL_DIST = 1500.0  # piksel (~75 hucre)
+# Eski deger (1500) tum haritaya leke birakiyordu -> gradyan yoktu. Kisaltildi:
+# iz sadece besine yakin bolgede kalir, KESKIN bir "besine giden ok" olusur.
+PH_FOOD_TRAIL_DIST = 600.0   # piksel (~30 hucre) (1500'den dusuruldu)
 PH_HOME_EVAPORATION = 0.06   # home feromonu saniyelik buharlasma orani
-PH_FOOD_EVAPORATION = 0.005  # besin feromonu saniyelik buharlasma orani (yavas)
+# Besin feromonu buharlasmasi artirildi: KULLANILMAYAN izler ~1 dk'da soluyor,
+# sadece tekrar tekrar pekistirilen (gercek) yollar kalici olur -> keskin iz.
+PH_FOOD_EVAPORATION = 0.012  # besin feromonu saniyelik buharlasma orani (0.005'ten)
 PH_MAX = 200.0              # feromon tavani (normalize icin)
 # "Super iz" (yogun besin yolu): esigin ustundeki guclu izler COK daha yavas
 # buharlasir ve MOR renge doner -> sik kullanilan besin yollari kalici olur.
@@ -154,9 +168,11 @@ PH_DIFFUSE_EVERY = 8.0      # neredeyse kapali (sadece cok nadir hafif yumusatma
 # bir gradyan olusturur. Cok-kaynakli BFS ile besine olan (duvarlardan
 # dolanarak) mesafe hesaplanir; koku = 1 - mesafe/menzil. Boylece koku
 # HARITA BOYUNCA yayilir ve karincalar yogunlugu tirmanip besini bulur.
-ODOR_RANGE_CELLS = 25       # koku menzili (hucre). Buyut -> besin bulmak kolaylasir
-                            # (uzun menzilli arama sinyali), kucult -> daha yerel.
-ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # koku ornekleme mesafesi (anten araligi)
+# Menzil 25 -> harita capinda neredeyse global koku -> gradyan duzlesir, yon yok.
+# 12'ye dusuruldu: koku YEREL ve YONLU olur; karinca yokus-yukari gercekten
+# ilerlemek zorunda kalir (yuva yaninda otomatik max koku farm'lanamaz).
+ODOR_RANGE_CELLS = 12       # koku menzili (hucre) (25'ten dusuruldu)
+ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # (eski uyumluluk; artik gradyan kullaniliyor)
 
 # ---------------------------------------------------------------------------
 # Besin davranisi
@@ -168,8 +184,11 @@ FOOD_MAX_AMOUNT = 999
 
 # Periyodik besin: her FOOD_SPAWN_INTERVAL saniyede bir, tas/engel olmayan
 # rastgele bos bir hucrede FOOD_SPAWN_AMOUNT degerinde besin olusur.
-FOOD_SPAWN_INTERVAL = 30.0      # periyodik besin araligi (60'tan dusuruldu)
-FOOD_SPAWN_AMOUNT = 5
+# Ortami SABITLEMEK icin (gorev durup dururken ogrenilebilsin): daha sik, daha
+# bol ve yuvadan UZAKTA spawn -> koloni surekli uzak forage hedefi bulur.
+FOOD_SPAWN_INTERVAL = 25.0      # periyodik besin araligi
+FOOD_SPAWN_AMOUNT = 12          # her spawn'da birim sayisi (5'ten artirildi)
+FOOD_SPAWN_MIN_NEST_CELLS = 12  # spawn yuvadan en az bu kadar hucre uzakta olur
 
 # ---------------------------------------------------------------------------
 # Sinir agi:  girdi -> Dense(encoder) -> LSTM -> Dense(cikis) -> argmax
@@ -177,8 +196,16 @@ FOOD_SPAWN_AMOUNT = 5
 # LSTM'den ONCE bir Dense kodlayici: cok sayidaki girdiyi (86) daha kucuk,
 # anlamli bir temsile sikistirir -> LSTM girdisi kuculur, genom kuculur,
 # GA icin arama uzayi daralir (daha hizli evrim).
-ENCODER_SIZE = 16               # LSTM oncesi Dense kodlayici boyutu (24'ten dusuruldu)
-HIDDEN_SIZE = 12                # LSTM gizli katman boyutu (16'dan dusuruldu)
+# Beyin mimarisi: "mlp" (saf feedforward, ONERILEN) | "lstm" (recurrent, hafizali)
+# Gorev neredeyse REAKTIF: homing/koku/feromon gradyanlari hazir verildigi icin
+# karar anlik girdilerden cozulebilir -> hafiza (recurrence) sart degil. MLP daha
+# kucuk genom + puruzsuz fitness manzarasi -> neuroevrimde daha hizli/kararli ogrenme.
+# LSTM zamansal kredi atamasini zorlastirip arama uzayini sismelirir.
+BRAIN_ARCH = "mlp"
+MLP_HIDDEN = 20                 # MLP gizli katman boyutu (tek gizli katman, tanh)
+
+ENCODER_SIZE = 16               # (LSTM modunda) LSTM oncesi Dense kodlayici boyutu
+HIDDEN_SIZE = 12                # (LSTM modunda) LSTM gizli katman boyutu
 OUTPUT_SIZE = 5                  # 0:hicbiri 1:ileri 2:geri 3:sol 4:sag
 
 ACTION_NONE = 0
@@ -202,10 +229,16 @@ MIN_POP = 15                    # bu sayinin altina dusulurse takviye (15'ten ar
 MAX_POP = 80                    # ust sinir
 # Ureme: yuvaya besin getiren HER karincadan, o karincanin genomundan
 # (mutasyonla) OFFSPRING_PER_DELIVERY adet yavru dogar.
-OFFSPRING_PER_DELIVERY = 5      # her teslim eden karincadan kac yavru (5'ten dusuruldu)
+OFFSPRING_PER_DELIVERY = 3      # her teslim eden karincadan kac yavru
 N_PARENTS = 2                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
-MUTATION_RATE = 0.10            # gen basina mutasyon olasiligi (0.06'dan artirildi)
-MUTATION_SCALE = 0.20           # mutasyon gauss siddeti (0.14'ten artirildi)
+# Calkalanma dizginlendi: cok yuksek mutasyon ogrenileni bozuyordu (erken iyi,
+# sonra cokus). Kararli rafine icin geri cekildi.
+MUTATION_RATE = 0.07            # gen basina mutasyon olasiligi (0.10'dan dusuruldu)
+MUTATION_SCALE = 0.15           # mutasyon gauss siddeti (0.20'den dusuruldu)
+# _reinforce'ta tamamen rastgele genom enjeksiyon orani (cesitlilik vs kararlilik)
+REINFORCE_RANDOM_FRAC = 0.10    # 0.25'ten dusuruldu -> elitler daha cok korunur
+# _on_delivery'de HOF uyesiyle crossover olasiligi (yavru cesitliligi)
+DELIVERY_CROSSOVER_FRAC = 0.30  # 0.40'tan dusuruldu
 
 # Fitness takviyesi: populasyon dususte rastgele yerine TUM ZAMANLARIN EN IYI
 # karincalarindan (hall of fame) ureme yapilir. Olen karincalarin yerine
@@ -213,24 +246,26 @@ MUTATION_SCALE = 0.20           # mutasyon gauss siddeti (0.14'ten artirildi)
 FITNESS_REINFORCE = True
 HALL_OF_FAME_SIZE = 12         # tum zamanlarin en iyi N karincasi saklanir
 HOF_OFFER_EVERY = 0.5          # yasayan en iyi karinca bu sikligla onur listesine sunulur
-# fitness = teslim*DELIVER_W + (mesafeye gore besin bulma) + odul_sekillendirme
-FITNESS_DELIVER_W = 10.0
-# Besin bulma odulu YUVADAN UZAKLIGA gore olceklenir: yuvaya yakin besin az,
-# uzaktaki besin cok odul verir. Bu, yuva etrafinda donen karincalar yerine
-# gercek FORAGER'lari (uzaga gidip besin toplayan) secer.
-FITNESS_FIND_BASE = 1.0        # her bulmada sabit kucuk odul
-FITNESS_FIND_DIST_W = 0.03     # piksel basina ek odul (yuvadan uzaklik)
+# fitness = teslim*(DELIVER_W + mesafe) + (mesafeye gore bulma) + odul_sekil.
+# Teslim odulu de mesafeye gore olceklenir: yuva yaninda topla-getir (kisa tur)
+# uzun-mesafe forage ile AYNI puani vermesin -> gercek forager'lar HOF'a girer.
+FITNESS_DELIVER_W = 8.0        # teslim basina sabit odul
+FITNESS_DELIVER_DIST_W = 0.02  # teslim edilen besin yuvadan ne kadar uzaktaysa o kadar ek odul
+# Besin bulma odulu YUVADAN UZAKLIGA gore olceklenir. Sabit taban KALDIRILDI
+# (1.0 -> 0): yuvaya cok yakin besin bulmak neredeyse 0 puan -> nest-circling
+# stratejisi odulsuz kalir. Sadece uzaga giden forage odullenir.
+FITNESS_FIND_BASE = 0.0        # sabit taban kaldirildi (yakin besin ~0 puan)
+FITNESS_FIND_DIST_W = 0.04     # piksel basina odul (yuvadan uzaklik) (artirildi)
 
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
-# Karincalar tam teslimat/bulma olmadan da DOGRU YONDE ILERLEDIKCE puan alir,
-# boylece evrim kademeli olarak "besine git" ve "yuvaya geri don" davranisini
-# secebilir. Farming'i onlemek icin sadece YENI en iyi ilerleme odullenir.
-# Yuvaya yaklasma odulu artirildi ama adim basina katkisi (~0.047) iki fitness
-# cezasindan (0.06) BIRAZ DAHA AZ kalacak sekilde ayarlandi.
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
 # Koku takibini OGRETEN odul: bos gezerken besin kokusunu tirmandikca puan.
-# Guclendirildi ki karincalar kokuyu takip etmeyi ogrensin.
 FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
+# IZ TAKIP odulu (YENI): bos gezerken food-feromon gradyaninin YOKUS-YUKARI
+# yonunde hareket etmek odullenir -> "izi takip et" davranisina DOGRUDAN
+# secilim baskisi. Iz yoksa (basta) odul 0; basarili karincalar iz biraktikca
+# digerleri izi takip etmeyi ogrenir (gercek karinca pozitif geri beslemesi).
+TRAIL_FOLLOW_W = 9.0           # food-feromon gradyani yonunde hareket odulu
 
 # ---------------------------------------------------------------------------
 # Kayit (recording)
@@ -242,9 +277,21 @@ RECORD_FPS = 30
 # Dosyalar
 # ---------------------------------------------------------------------------
 MAP_FILE = "maps/default_map.json"
+MAPS_DIR = "maps"                        # tum egitim haritalari (harita secimi/rotasyonu)
 ANT_IMAGE = "ant.png"
 CHECKPOINT_FILE = "sim_checkpoint.pkl"   # (eski) tekil kayit
 DEMO_DIR = "demos"                       # H ile kaydedilen demolar (gecmis tutulur)
+
+# ---------------------------------------------------------------------------
+# Model bankasi (kalici hall-of-fame arsivi) + coklu harita egitimi
+# ---------------------------------------------------------------------------
+# En iyi genomlar diske kaydedilir; her yeni simulasyon (hangi haritada olursa
+# olsun) baslangic populasyonunun bir kismini bankadan tohumlar. Farkli
+# haritalarda egitilen modeller boylelikle kosudan kosuya GENELLESIR/guclenir.
+MODEL_BANK_FILE = "models/model_bank.pkl"
+MODEL_BANK_SIZE = 24        # bankada tutulan en iyi genom sayisi
+BANK_SEED_FRAC = 0.5        # baslangic popun bu orani bankadan (mutasyonla) tohumlanir
+BANK_MERGE_EVERY = 60.0     # bu kadar sim-saniyede bir hall -> banka birlestir + kaydet
 
 # ---------------------------------------------------------------------------
 # Istatistik (zaman serisi - T tusu ile gorsellestirilir)

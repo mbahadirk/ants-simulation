@@ -26,8 +26,9 @@ import glob
 import pygame
 
 import config as C
-from world import World, make_default_world
+from world import World, make_default_world, make_random_world
 from simulation import Simulation
+from model_bank import ModelBank
 from camera import Camera
 from renderer import Renderer
 from recorder import Recorder
@@ -78,10 +79,11 @@ def list_demos():
     return out
 
 
-def load_world():
-    if os.path.exists(C.MAP_FILE):
+def load_world(map_path=None):
+    path = map_path or C.MAP_FILE
+    if os.path.exists(path):
         try:
-            return World.load(C.MAP_FILE)
+            return World.load(path)
         except Exception as e:
             print(f"[map] yuklenemedi ({e}), varsayilan harita kullaniliyor")
     w = make_default_world()
@@ -90,6 +92,24 @@ def load_world():
     except Exception:
         pass
     return w
+
+
+def list_maps():
+    """maps/ klasorundeki tum haritalar (alfabetik). En az MAP_FILE bulunur."""
+    paths = sorted(glob.glob(os.path.join(C.MAPS_DIR, "*.json")))
+    if not paths and os.path.exists(C.MAP_FILE):
+        paths = [C.MAP_FILE]
+    return paths
+
+
+def create_random_map():
+    """Yeni rastgele egitim haritasi uretip maps/ altina kaydeder; yolunu doner."""
+    os.makedirs(C.MAPS_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(C.MAPS_DIR, f"random_{stamp}.json")
+    make_random_world().save(path)
+    print(f"[map] rastgele harita olusturuldu: {path}")
+    return path
 
 
 # ===========================================================================
@@ -224,9 +244,87 @@ def run_demo_history(screen):
 
 
 # ===========================================================================
+# Map picker (training map selection for the model bank system)
+# ===========================================================================
+def run_map_picker(screen):
+    """Lists maps in maps/. Click to train on that map; 'New Random Map'
+    generates a fresh randomized training map. Returns a map path,
+    'menu', or 'quit'."""
+    font_big = pygame.font.SysFont("consolas", 32, bold=True)
+    font = pygame.font.SysFont("consolas", 18)
+    small = pygame.font.SysFont("consolas", 14)
+    clock = pygame.time.Clock()
+    cx = C.SCREEN_W // 2
+
+    while True:
+        maps = list_maps()[:10]
+        row_h, top = 56, 150
+        rows = []
+        for i, p in enumerate(maps):
+            r = pygame.Rect(cx - 380, top + i * (row_h + 8), 760, row_h)
+            rows.append((r, p))
+        y_btn = top + len(maps) * (row_h + 8) + 16
+        newbtn = pygame.Rect(cx - 380, y_btn, 370, 48)
+        back = pygame.Rect(cx + 10, y_btn, 370, 48)
+
+        clock.tick(C.FPS)
+        mouse = pygame.mouse.get_pos()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return "menu"
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if back.collidepoint(event.pos):
+                    return "menu"
+                if newbtn.collidepoint(event.pos):
+                    try:
+                        return create_random_map()
+                    except Exception as e:
+                        print(f"[map] rastgele harita olusturulamadi: {e}")
+                        continue
+                for r, p in rows:
+                    if r.collidepoint(event.pos):
+                        return p
+
+        screen.fill((20, 18, 16))
+        screen.blit(font_big.render("SELECT TRAINING MAP", True, (235, 200, 110)),
+                    (cx - 380, 60))
+        screen.blit(small.render(
+            "Models are saved to the model bank and carried across maps "
+            "(train on many maps -> stronger, general models)",
+            True, (140, 140, 140)), (cx - 380, 104))
+        screen.blit(small.render("M during a run: switch to the next map  |  ESC: back",
+                                 True, (140, 140, 140)), (cx - 380, 122))
+
+        for r, p in rows:
+            hot = r.collidepoint(mouse)
+            pygame.draw.rect(screen, (55, 62, 55) if hot else (40, 44, 42), r,
+                             border_radius=8)
+            pygame.draw.rect(screen, (20, 20, 20), r, 2, border_radius=8)
+            name = os.path.basename(p)
+            tag = "  (default)" if os.path.normpath(p) == os.path.normpath(C.MAP_FILE) else ""
+            screen.blit(font.render(name + tag, True, (235, 235, 235)),
+                        (r.x + 16, r.y + 16))
+
+        nhot = newbtn.collidepoint(mouse)
+        pygame.draw.rect(screen, (60, 90, 120) if nhot else (45, 65, 90), newbtn,
+                         border_radius=8)
+        nt = font.render("New Random Map", True, (235, 235, 235))
+        screen.blit(nt, nt.get_rect(center=newbtn.center))
+
+        bhot = back.collidepoint(mouse)
+        pygame.draw.rect(screen, (70, 70, 80) if bhot else (45, 48, 55), back,
+                         border_radius=8)
+        bt = font.render("Back (ESC)", True, (235, 235, 235))
+        screen.blit(bt, bt.get_rect(center=back.center))
+        pygame.display.flip()
+
+
+# ===========================================================================
 # Simulation
 # ===========================================================================
-def run_simulation(screen, resume_path=None):
+def run_simulation(screen, resume_path=None, map_path=None):
     camera = Camera()
     renderer = Renderer()
     recorder = Recorder()
@@ -235,17 +333,22 @@ def run_simulation(screen, resume_path=None):
     flash_text = ""
     flash_timer = 0.0
 
+    # model bankasi: onceki kosularin en iyi genomlari (haritalar arasi tasinir)
+    bank = ModelBank()
+    map_path = map_path or C.MAP_FILE
+    map_name = os.path.basename(map_path)
+
     if resume_path and os.path.exists(resume_path):
         try:
-            sim = Simulation.load(resume_path)
+            sim = Simulation.load(resume_path, bank=bank)
             flash_text = f"Resumed: t={int(sim.sim_time)}s  gen={sim.generation}"
             flash_timer = 3.0
             print(f"[SIM] Resumed from {resume_path}: t={int(sim.sim_time)}s")
         except Exception as e:
             print(f"[SIM] Load error ({e}), starting a new simulation")
-            sim = Simulation(world=load_world())
+            sim = Simulation(world=load_world(map_path), map_name=map_name, bank=bank)
     else:
-        sim = Simulation(world=load_world())
+        sim = Simulation(world=load_world(map_path), map_name=map_name, bank=bank)
 
     debug = False
     paused = False
@@ -258,10 +361,29 @@ def run_simulation(screen, resume_path=None):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                recorder.stop(); return "quit"
+                sim.save_bank(); recorder.stop(); return "quit"
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    recorder.stop(); return "menu"
+                    sim.save_bank(); recorder.stop(); return "menu"
+                elif event.key == pygame.K_m:          # siradaki haritaya gec
+                    # mevcut kosunun en iyileri bankaya yazilir, yeni harita
+                    # yuklenir ve populasyon BANKADAN tohumlanarak yeniden baslar
+                    sim.save_bank()
+                    maps = list_maps()
+                    if maps:
+                        cur = os.path.normpath(map_path)
+                        try:
+                            idx = [os.path.normpath(p) for p in maps].index(cur)
+                        except ValueError:
+                            idx = -1
+                        map_path = maps[(idx + 1) % len(maps)]
+                        map_name = os.path.basename(map_path)
+                        sim = Simulation(world=load_world(map_path),
+                                         map_name=map_name, bank=bank)
+                        camera.reset()
+                        flash_text = f"Map: {map_name} (population reseeded from bank)"
+                        flash_timer = 3.0
+                        print(f"[SIM] Switched to map {map_name}")
                 elif event.key == pygame.K_d:
                     debug = not debug
                 elif event.key == pygame.K_z:
@@ -366,7 +488,10 @@ def main():
         if state == "menu":
             state = run_menu(screen)
         elif state == "sim":
-            state = run_simulation(screen)
+            # once egitim haritasi secilir (model bankasi haritalar arasi tasinir)
+            state = run_map_picker(screen)
+            if isinstance(state, str) and state.endswith(".json"):
+                state = run_simulation(screen, map_path=state)
         elif state == "demos":
             state = run_demo_history(screen)
             # a .pkl path means "resume this demo"

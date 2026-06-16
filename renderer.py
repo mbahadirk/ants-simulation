@@ -203,6 +203,14 @@ class Renderer:
             f"Hall of fame: {st['hof_size']}   Best fitness: {st['hof_best']:.1f}",
             f"Zoom: x{camera.zoom:.1f}   Speed: x{speed:g}   Lifespan: {int(C.LIFESPAN_MIN)}-{int(C.LIFESPAN_MAX)}s",
         ]
+        bank = getattr(sim, "bank", None)
+        map_name = getattr(sim, "map_name", None)
+        if map_name:
+            if bank is not None and len(bank) > 0:
+                lines.append(f"Map: {map_name}   Bank: {len(bank)} models "
+                             f"(best {bank.best_fitness():.0f})")
+            else:
+                lines.append(f"Map: {map_name}   Bank: empty")
         y = 8
         for ln in lines:
             self._text(surf, ln, 10, y)
@@ -223,7 +231,7 @@ class Renderer:
 
         # help
         help_txt = ("D:debug  Z:zoom  O/P:speed  K/L:lifespan  T:stats  H:save-demo  "
-                    "S:record  Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
+                    "M:next-map  S:record  Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
         self._text(surf, help_txt, 10, C.SCREEN_H - 22, (150, 150, 150))
 
     def _draw_ant_panel(self, surf, ant):

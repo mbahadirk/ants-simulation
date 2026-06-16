@@ -136,6 +136,33 @@ class World:
         arr = self.ph_home if field == C.PH_HOME else self.ph_food
         return float(arr[row, col]) / C.PH_MAX
 
+    # ------------------------------------------------ bilineer ornek + gradyan
+    @staticmethod
+    def _bilinear(arr, x, y):
+        """arr izgarasini surekli (x,y) piksel konumunda bilineer interpolasyonla
+        orntekler. Hucre kuantizasyonunu yumusatir -> puruzsuz gradyan."""
+        cs = C.CELL_SIZE
+        H, W = arr.shape
+        fx = x / cs - 0.5
+        fy = y / cs - 0.5
+        c0 = int(np.floor(fx)); r0 = int(np.floor(fy))
+        tx = fx - c0; ty = fy - r0
+        c0c = min(max(c0, 0), W - 1); c1c = min(max(c0 + 1, 0), W - 1)
+        r0c = min(max(r0, 0), H - 1); r1c = min(max(r0 + 1, 0), H - 1)
+        v00 = arr[r0c, c0c]; v01 = arr[r0c, c1c]
+        v10 = arr[r1c, c0c]; v11 = arr[r1c, c1c]
+        top = v00 * (1 - tx) + v01 * tx
+        bot = v10 * (1 - tx) + v11 * tx
+        return float(top * (1 - ty) + bot * ty)
+
+    def field_gradient(self, arr, x, y, step=None):
+        """arr alaninin (x,y)'deki yerel gradyanini (gx, gy) merkezi farkla doner.
+        Birim: alan-degeri / piksel. Yokus-yukari yon = (gx, gy)."""
+        h = step or C.CHEM_GRAD_STEP
+        gx = (self._bilinear(arr, x + h, y) - self._bilinear(arr, x - h, y)) / (2 * h)
+        gy = (self._bilinear(arr, x, y + h) - self._bilinear(arr, x, y - h)) / (2 * h)
+        return gx, gy
+
     def update_pheromones(self, dt):
         # buharlasma
         decay_home = max(0.0, 1.0 - C.PH_HOME_EVAPORATION * dt)
@@ -277,11 +304,17 @@ class World:
 
     # ------------------------------------------------------- periyodik besin
     def spawn_random_food(self, rng, amount):
-        """Tas/engel/yuva/besin olmayan rastgele bos bir hucrede besin olusturur."""
+        """Bos bir hucrede besin olusturur. Yuvadan UZAK hucreler tercih edilir
+        (gercek forage hedefi olussun, yuva-cevresi topla-getir ozendirilmesin)."""
         empties = np.argwhere(self.grid == C.EMPTY)
         if len(empties) == 0:
             return None
-        r, c = empties[int(rng.integers(0, len(empties)))]
+        ncol, nrow = self.nest_cell
+        # her bos hucrenin yuvaya hucre-mesafesi
+        d = np.hypot(empties[:, 1] - ncol, empties[:, 0] - nrow)
+        far = empties[d >= C.FOOD_SPAWN_MIN_NEST_CELLS]
+        pool = far if len(far) > 0 else empties
+        r, c = pool[int(rng.integers(0, len(pool)))]
         self.grid[r, c] = C.FOOD
         self.food_amount[r, c] = int(amount)
         self.odor_dirty = True
@@ -314,6 +347,66 @@ class World:
             )
         fa = data.get("food_amount")
         return cls(grid=grid, food_amount=fa)
+
+
+def make_random_world(seed=None):
+    """Rastgele EGITIM haritasi: rastgele yuva konumu, duvar segmentleri ve
+    yuvadan uzak besin kumeleri. Coklu-harita egitiminde modellerin tek bir
+    haritayi ezberlemesini onlemek, genellesmis forage davranisi evrimlestirmek
+    icin kullanilir ('New Random Map' butonu)."""
+    rng = np.random.default_rng(seed)
+    grid = np.zeros((C.GRID_H, C.GRID_W), dtype=np.int16)
+
+    # cevre duvari
+    grid[0, :] = C.OBSTACLE
+    grid[-1, :] = C.OBSTACLE
+    grid[:, 0] = C.OBSTACLE
+    grid[:, -1] = C.OBSTACLE
+
+    # yuva: kenarlardan uzak rastgele konum (2x2)
+    cx = int(rng.integers(12, C.GRID_W - 13))
+    cy = int(rng.integers(8, C.GRID_H - 9))
+    grid[cy:cy + 2, cx:cx + 2] = C.NEST
+
+    # rastgele duvar segmentleri (yatay/dikey tas-engel cizgileri)
+    n_walls = int(rng.integers(8, 16))
+    for _ in range(n_walls):
+        tile = C.STONE if rng.random() < 0.5 else C.OBSTACLE
+        length = int(rng.integers(3, 11))
+        horizontal = rng.random() < 0.5
+        r = int(rng.integers(2, C.GRID_H - 2))
+        c = int(rng.integers(2, C.GRID_W - 2))
+        for i in range(length):
+            rr = r + (0 if horizontal else i)
+            cc = c + (i if horizontal else 0)
+            if not (1 <= rr < C.GRID_H - 1 and 1 <= cc < C.GRID_W - 1):
+                break
+            # yuvanin yakinini kapatma (cikis yolu kalsin)
+            if abs(cc - cx) <= 4 and abs(rr - cy) <= 4:
+                continue
+            if grid[rr, cc] == C.EMPTY:
+                grid[rr, cc] = tile
+
+    # besin kumeleri: yuvadan uzakta (gercek forage hedefleri)
+    n_clusters = int(rng.integers(5, 9))
+    placed = 0
+    attempts = 0
+    while placed < n_clusters and attempts < 200:
+        attempts += 1
+        bc = int(rng.integers(3, C.GRID_W - 3))
+        br = int(rng.integers(3, C.GRID_H - 3))
+        if np.hypot(bc - cx, br - cy) < C.FOOD_SPAWN_MIN_NEST_CELLS:
+            continue
+        n_food = int(rng.integers(6, 13))
+        for _ in range(n_food):
+            oc = bc + int(rng.integers(-3, 4))
+            orr = br + int(rng.integers(-3, 4))
+            if (1 <= oc < C.GRID_W - 1 and 1 <= orr < C.GRID_H - 1
+                    and grid[orr, oc] == C.EMPTY):
+                grid[orr, oc] = C.FOOD
+        placed += 1
+
+    return World(grid=grid)
 
 
 def make_default_world():

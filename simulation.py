@@ -21,10 +21,13 @@ from neural_network import breed, mutate
 
 
 class Simulation:
-    def __init__(self, world=None, seed=None):
+    def __init__(self, world=None, seed=None, map_name="default", bank=None):
         self.rng = np.random.default_rng(seed)
         self.world = world or make_default_world()
         self.ants = []
+        self.map_name = map_name      # hangi haritada egitiliyor (banka kaydi icin)
+        self.bank = bank              # ModelBank (None = banka kullanilmiyor)
+        self._bank_acc = 0.0
 
         # ONUR LISTESI (hall of fame): tum zamanlarin en iyi karincalari.
         # ant_id -> (fitness, genom, nesil). Olen karincalarin yerine gelenler
@@ -61,8 +64,31 @@ class Simulation:
 
     # ------------------------------------------------------------- baslangic
     def _spawn_initial(self):
-        for _ in range(C.INITIAL_POP):
+        """Baslangic populasyonu: model bankasi varsa BANK_SEED_FRAC orani
+        bankadaki en iyi genomlardan (mutasyonla) tohumlanir, kalani rastgele.
+        Boylece onceki kosularda/haritalarda ogrenilen davranis tasinir ama
+        rastgele kisim cesitliligi korur."""
+        n_seed = 0
+        if self.bank is not None and len(self.bank) > 0:
+            tops = self.bank.top_genomes()
+            n_seed = min(int(C.INITIAL_POP * C.BANK_SEED_FRAC), C.INITIAL_POP)
+            for i in range(n_seed):
+                g = mutate(tops[i % len(tops)], self.rng,
+                           C.MUTATION_RATE, C.MUTATION_SCALE)
+                self._spawn_ant(genome=g, generation=0)
+            print(f"[BANK] baslangic popunun {n_seed} karincasi bankadan "
+                  f"tohumlandi ({len(tops)} model, en iyi {self.bank.best_fitness():.1f})")
+        for _ in range(C.INITIAL_POP - n_seed):
             self._spawn_ant(genome=None, generation=0)
+
+    def save_bank(self):
+        """Hall of fame'i model bankasina birlestirir ve diske yazar."""
+        if self.bank is None:
+            return False
+        changed = self.bank.merge_hall(self.hall, self.map_name)
+        if changed:
+            self.bank.save()
+        return changed
 
     def _nest_spawn_pos(self):
         nx, ny = self.world.nest_pos
@@ -94,6 +120,13 @@ class Simulation:
         if self._stats_acc >= C.STATS_SAMPLE_INTERVAL:
             self._stats_acc -= C.STATS_SAMPLE_INTERVAL
             self._record_history()
+
+        # model bankasi: periyodik hall -> banka birlestir + diske kaydet
+        if self.bank is not None:
+            self._bank_acc += dt
+            if self._bank_acc >= C.BANK_MERGE_EVERY:
+                self._bank_acc = 0.0
+                self.save_bank()
 
         for ant in self.ants:
             events = ant.update(dt, self.world, self.ants)
@@ -152,8 +185,8 @@ class Simulation:
         HOF donukluguna (eski basarili genomlarin tekrarlanmasina) takılmaz."""
         elite = self.hall_best()
 
-        # %25 olasilikla tamamen rastgele genom enjekte et
-        if not elite or self.rng.random() < 0.25:
+        # REINFORCE_RANDOM_FRAC olasilikla tamamen rastgele genom enjekte et
+        if not elite or self.rng.random() < C.REINFORCE_RANDOM_FRAC:
             return self._spawn_ant(genome=None, generation=self.generation)
 
         if C.FITNESS_REINFORCE and elite:
@@ -178,8 +211,8 @@ class Simulation:
         self.generation = max(self.generation, child_gen)
         elite = self.hall_best()
         for _ in range(C.OFFSPRING_PER_DELIVERY):
-            # %40 ihtimalle HOF'tan biriyle crossover yap -> yavru daha cesitli olur
-            if elite and self.rng.random() < 0.40:
+            # DELIVERY_CROSSOVER_FRAC ihtimalle HOF'tan biriyle crossover -> cesitlilik
+            if elite and self.rng.random() < C.DELIVERY_CROSSOVER_FRAC:
                 other = elite[self.rng.integers(0, min(len(elite), C.N_PARENTS))][1]
                 child = breed([parent_genome, other], self.rng,
                               C.MUTATION_RATE, C.MUTATION_SCALE)
@@ -230,6 +263,7 @@ class Simulation:
             "wall_hits": a.wall_hits, "idle_steps": a.idle_steps,
             "fitness_bonus": a.fitness_bonus, "min_home_dist": a.min_home_dist,
             "max_odor_seen": a.max_odor_seen, "carry_distance": a.carry_distance,
+            "max_food_ph_seen": a.max_food_ph_seen, "last_find_dist": a.last_find_dist,
             "genome": a.brain.get_genome(),
             "h": a.brain.h.copy(), "c": a.brain.c.copy(),
         }
@@ -253,6 +287,7 @@ class Simulation:
             "sim_time": self.sim_time,
             "food_spawn_acc": self._food_spawn_acc,
             "next_ant_id": Ant._next_id,
+            "map_name": self.map_name,
             "history": list(self.history),
             # onur listesi (tum zamanlarin en iyileri)
             "hall": {aid: (f, g.copy(), gen) for aid, (f, g, gen) in self.hall.items()},
@@ -265,14 +300,14 @@ class Simulation:
         os.replace(tmp, path)  # atomik yazim (yarim kayit olmasin)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, bank=None):
         """Kaydedilmis simulasyonu yukle ve devam ettir."""
         with open(path, "rb") as f:
             state = pickle.load(f)
 
         # ag mimarisi degistiyse (genom boyutu) eski checkpoint uyumsuzdur
-        from neural_network import LSTMPolicy
-        expected = LSTMPolicy().genome_size
+        from neural_network import brain_genome_size
+        expected = brain_genome_size()
         ants_state = state.get("ants", [])
         if ants_state and len(ants_state[0]["genome"]) != expected:
             raise ValueError(
@@ -291,6 +326,8 @@ class Simulation:
 
         sim = cls(world=world, seed=None)
         sim.ants.clear()
+        sim.map_name = state.get("map_name", "default")
+        sim.bank = bank
 
         for s in state["ants"]:
             a = Ant(s["x"], s["y"], genome=s["genome"], rng=sim.rng,
@@ -309,6 +346,8 @@ class Simulation:
             a.min_home_dist = s["min_home_dist"]
             a.max_odor_seen = s["max_odor_seen"]
             a.carry_distance = s.get("carry_distance", 0.0)
+            a.max_food_ph_seen = s.get("max_food_ph_seen", 0.0)
+            a.last_find_dist = s.get("last_find_dist", 0.0)
             a.brain.h = s["h"].copy()      # LSTM gizli durumu
             a.brain.c = s["c"].copy()
             sim.ants.append(a)
