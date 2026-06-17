@@ -43,11 +43,9 @@ class Simulation:
         self.sim_time = 0.0
         self._food_spawn_acc = 0.0   # periyodik besin zamanlayicisi
         self.selected = None  # debug'da secili karinca
-        self.food_picked = 0   # kumulatif alinan besin
-        self.food_lost   = 0   # tasiyan karinca olunce kaybolan besin
 
         # zaman serisi istatistik (T tusu ile gorsellestirilir)
-        self.history = []
+        self.history = []            # her ornek: dict(t,pop,births,deaths,delivered,hof_best,gen)
         self._stats_acc = 0.0
 
         self._spawn_initial()
@@ -55,15 +53,13 @@ class Simulation:
     def _record_history(self):
         s = self.stats()
         self.history.append({
-            "t":         round(self.sim_time, 1),
-            "pop":       s["pop"],
-            "births":    s["births"],
-            "deaths":    s["deaths"],
+            "t": round(self.sim_time, 1),
+            "pop": s["pop"],
+            "births": s["births"],
+            "deaths": s["deaths"],
             "delivered": s["delivered"],
-            "hof_best":  round(s["hof_best"], 2),
-            "gen":       s["generation"],
-            "picked":    self.food_picked,
-            "lost":      self.food_lost,
+            "hof_best": round(s["hof_best"], 2),
+            "gen": s["generation"],
         })
 
     # ------------------------------------------------------------- baslangic
@@ -114,11 +110,10 @@ class Simulation:
         self.sim_time += dt
 
         # periyodik besin: her FOOD_SPAWN_INTERVAL saniyede bir rastgele bos hucre
-        if getattr(self, "auto_food", True):
-            self._food_spawn_acc += dt
-            if self._food_spawn_acc >= C.FOOD_SPAWN_INTERVAL:
-                self._food_spawn_acc -= C.FOOD_SPAWN_INTERVAL
-                self.world.spawn_random_food(self.rng, C.FOOD_SPAWN_AMOUNT)
+        self._food_spawn_acc += dt
+        if self._food_spawn_acc >= C.FOOD_SPAWN_INTERVAL:
+            self._food_spawn_acc -= C.FOOD_SPAWN_INTERVAL
+            self.world.spawn_random_food(self.rng, C.FOOD_SPAWN_AMOUNT)
 
         # zaman serisi istatistik ornegi
         self._stats_acc += dt
@@ -135,8 +130,6 @@ class Simulation:
 
         for ant in self.ants:
             events = ant.update(dt, self.world, self.ants)
-            if events["picked"]:
-                self.food_picked += 1
             if events["delivered"]:
                 self._on_delivery(ant)
 
@@ -157,18 +150,15 @@ class Simulation:
                 survivors.append(a)
             else:
                 self._offer_hall(a)
-                if a.carrying:
-                    self.food_lost += 1   # tasiyan karinca olunce besin kaybi
         self.ants = survivors
         self.deaths += before - len(self.ants)
         if self.selected is not None and not self.selected.alive:
             self.selected = None
 
         # populasyon dususte: olenlerin yerine TUM ZAMANLARIN EN IYILERINDEN uret
-        if getattr(self, "auto_spawn", True):
-            while len(self.ants) < C.MIN_POP:
-                if self._reinforce() is None:
-                    break
+        while len(self.ants) < C.MIN_POP:
+            if self._reinforce() is None:
+                break
 
     def _offer_hall(self, ant):
         """Karincayi onur listesine sunar (tum zamanlarin en iyileri saklanir)."""
@@ -286,12 +276,11 @@ class Simulation:
             "ants": [self._ant_state(a) for a in self.ants],
             "world_grid": self.world.grid.copy(),
             "world_food_amount": self.world.food_amount.copy(),
-            "world_ph": self.world.ph.copy(),
+            "world_ph_home": self.world.ph_home.copy(),
+            "world_ph_food": self.world.ph_food.copy(),
             "world_food_odor": self.world.food_odor.copy(),
             "world_delivered_food": self.world.delivered_food,
             "total_delivered": self.total_delivered,
-            "food_picked": self.food_picked,
-            "food_lost": self.food_lost,
             "births": self.births,
             "deaths": self.deaths,
             "generation": self.generation,
@@ -330,7 +319,8 @@ class Simulation:
         # dunyayi kaydedilen grid'ten yeniden olustur (yuva + koku otomatik)
         world = World(grid=state["world_grid"].copy(),
                       food_amount=state["world_food_amount"].copy())
-        world.ph = state["world_ph"].copy()
+        world.ph_home = state["world_ph_home"].copy()
+        world.ph_food = state["world_ph_food"].copy()
         world.food_odor = state["world_food_odor"].copy()
         world.delivered_food = state.get("world_delivered_food", 0)
 
@@ -364,8 +354,6 @@ class Simulation:
 
         Ant._next_id = state.get("next_ant_id", len(sim.ants))
         sim.total_delivered = state["total_delivered"]
-        sim.food_picked = state.get("food_picked", 0)
-        sim.food_lost   = state.get("food_lost",   0)
         sim.births = state["births"]
         sim.deaths = state["deaths"]
         sim.generation = state["generation"]

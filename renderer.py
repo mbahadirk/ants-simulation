@@ -88,21 +88,20 @@ class Renderer:
         pygame.draw.circle(surf, C.COLORS[C.NEST], (int(nx), int(ny)), int(nr), max(2, int(nr * 0.15)))
 
     def _draw_fields(self, surf, world, camera, debug=False):
-        """Feromon: kirmizi=besin izi, MOR=super besin izi, mavi=home izi, sari=koku."""
+        """TEK feromon: guclendikce parlak CYAN (cok guclu iz -> beyazimsi). Sari=koku."""
         # (GRID_H, GRID_W) -> (GRID_W, GRID_H) make_surface icin
-        home = np.clip(world.ph_home / C.PH_MAX, 0, 1).T
-        food = np.clip(world.ph_food / C.PH_MAX, 0, 1).T
+        ph = np.clip(world.ph / C.PH_MAX, 0, 1).T
         odor = np.clip(world.food_odor, 0, 1).T
-        # super iz (esik ustu yogun besin yolu) -> mor renk icin mavi bilesen
-        denom = max(1.0, C.PH_MAX - C.PH_FOOD_STRONG_THRESH)
-        strong = np.clip((world.ph_food - C.PH_FOOD_STRONG_THRESH) / denom, 0, 1).T
+        # guclu iz (esik ustu sik gecilen yol) -> parlatma icin
+        denom = max(1.0, C.PH_MAX - C.PH_STRONG_THRESH)
+        strong = np.clip((world.ph - C.PH_STRONG_THRESH) / denom, 0, 1).T
         odor_gain = 170 if debug else 105
-        if home.max() <= 0 and food.max() <= 0 and odor.max() <= 0:
+        if ph.max() <= 0 and odor.max() <= 0:
             return
         arr = np.zeros((C.GRID_W, C.GRID_H, 3), dtype=np.uint8)
-        arr[..., 0] = np.clip(food * 235 + odor * odor_gain * 0.9, 0, 255).astype(np.uint8)      # R: besin izi + koku
-        arr[..., 1] = np.clip(food * 70 + home * 30 + odor * odor_gain * 0.8, 0, 255).astype(np.uint8)  # G
-        arr[..., 2] = np.clip(home * 215 + strong * 230, 0, 255).astype(np.uint8)               # B: home izi + super iz (mor)
+        arr[..., 0] = np.clip(odor * odor_gain * 0.9 + ph * 160 + strong * 220, 0, 255).astype(np.uint8)  # R: koku + mor
+        arr[..., 1] = np.clip(odor * odor_gain * 0.8 + ph * 20  + strong * 30, 0, 255).astype(np.uint8)  # G: sadece koku
+        arr[..., 2] = np.clip(ph * 230 + strong * 130, 0, 255).astype(np.uint8)                          # B: dominant (violet)
         small = pygame.surfarray.make_surface(arr)
         tw = max(1, int(C.WORLD_W * camera.zoom))
         th = max(1, int(C.WORLD_H * camera.zoom))
@@ -132,7 +131,8 @@ class Renderer:
 
             if debug:
                 self._draw_vision(surf, ant, camera)
-                self._draw_homing_arrow(surf, ant, camera, size)
+                if getattr(sim.world, "homing_enabled", True):
+                    self._draw_homing_arrow(surf, ant, camera, size)
 
             img = self._ant_surface(ant.heading, size)
             rect = img.get_rect(center=(sx, sy))
@@ -219,6 +219,16 @@ class Renderer:
         # mod gostergeleri
         if debug:
             self._text(surf, "DEBUG", C.SCREEN_W - 90, 10, (120, 220, 255))
+        # otomatik spawn / besin gostergeleri (kapali oldugunda uyar)
+        auto_spawn = getattr(sim, "auto_spawn", True)
+        auto_food  = getattr(sim, "auto_food",  True)
+        ind_x = C.SCREEN_W - 270   # settings butonu sag ustte (36px), burasi biraz solda
+        ind_y = 10
+        if not auto_spawn:
+            self._text(surf, "SPAWN:OFF [F]", ind_x, ind_y, (255, 120, 60))
+            ind_y += 20
+        if not auto_food:
+            self._text(surf, "FOOD-AUTO:OFF [G]", ind_x, ind_y, (255, 200, 60))
         if recorder and recorder.recording:
             pygame.draw.circle(surf, (230, 50, 50), (C.SCREEN_W - 80, 36), 7)
             self._text(surf, f"REC ({recorder.backend})", C.SCREEN_W - 65, 28, (230, 80, 80))
@@ -231,7 +241,8 @@ class Renderer:
 
         # help
         help_txt = ("D:debug  Z:zoom  O/P:speed  K/L:lifespan  T:stats  H:save-demo  "
-                    "M:next-map  S:record  Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
+                    "M:next-map  S:record  F:spawn-toggle  G:food-toggle  MidClick:food  "
+                    "Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
         self._text(surf, help_txt, 10, C.SCREEN_H - 22, (150, 150, 150))
 
     def _draw_ant_panel(self, surf, ant):
@@ -270,3 +281,271 @@ class Renderer:
 
     def _text(self, surf, txt, x, y, color=(230, 230, 230)):
         surf.blit(self.font.render(txt, True, color), (x, y))
+
+
+# ===========================================================================
+# Settings Panel  (sag ust kose dugmesi + acilir panel)
+# ===========================================================================
+class SettingsPanel:
+    """Gear dugmesine tiklaninca acilan ayar paneli.
+
+    Kullanim (main.py):
+        panel = SettingsPanel()
+        # event dongusu icinde:
+        speed = panel.handle_event(event, sim, speed)
+        # cizim:
+        panel.draw(surf, sim, speed)
+    """
+
+    BTN = 36          # gear buton kenari
+    PW  = 290         # panel genisligi
+    PH  = 386         # panel yuksekligi (3 toggle + 3 slider + tool picker)
+    PAD = 12
+
+    # (slider_id, etiket, birim, min, max, log_scale)
+    _SLIDERS = [
+        ("speed",      "Speed",      "x",  C.SIM_SPEED_MIN, C.SIM_SPEED_MAX, True),
+        ("food_val",   "Food Value", " ",  1,               500,             False),
+        ("food_rate",  "Spawn Rate", "s",  5,               300,             False),
+    ]
+
+    # (tile_id, etiket, renk)
+    _TOOLS = [
+        (C.FOOD,     "Food",   (200, 60,  60)),
+        (C.STONE,    "Stone",  (110, 110, 120)),
+        (C.EMPTY,    "Erase",  (50,  70,  50)),
+    ]
+
+    def __init__(self):
+        self.open       = False
+        self.brush_tool = C.FOOD   # orta tik ile yerlestirilecek oge
+        self.btn    = pygame.Rect(C.SCREEN_W - self.BTN - 8, 8, self.BTN, self.BTN)
+        self._drag  = None
+        self._font  = None
+        self._sfont = None
+
+    # ---------------------------------------------------------------- fontlar
+    def _init_fonts(self):
+        if self._font is None:
+            self._font  = pygame.font.SysFont("consolas", 15, bold=True)
+            self._sfont = pygame.font.SysFont("consolas", 13)
+
+    # ---------------------------------------------------------------- panel konumu
+    def _panel_rect(self):
+        return pygame.Rect(C.SCREEN_W - self.PW - 8,
+                           8 + self.BTN + 4,
+                           self.PW, self.PH)
+
+    # ---------------------------------------------------------------- slider hesaplari
+    @staticmethod
+    def _val_to_t(val, lo, hi, log):
+        import math
+        if log:
+            return math.log(val / lo) / math.log(hi / lo)
+        return (val - lo) / (hi - lo)
+
+    @staticmethod
+    def _t_to_val(t, lo, hi, log):
+        import math
+        t = max(0.0, min(1.0, t))
+        if log:
+            return lo * (hi / lo) ** t
+        return lo + t * (hi - lo)
+
+    def _track_rect(self, panel_x, row_y):
+        lw = 96    # etiket genisligi
+        vw = 42    # deger yazi genisligi
+        tw = self.PW - self.PAD * 2 - lw - vw - 8
+        return pygame.Rect(panel_x + self.PAD + lw, row_y + 12, tw, 8)
+
+    # ---------------------------------------------------------------- event
+    def handle_event(self, event, sim, speed):
+        """Olaylari isle; guncellenmis speed degerini doner."""
+        self._init_fonts()
+        pr = self._panel_rect()
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = event.pos
+
+            # gear buton
+            if self.btn.collidepoint(pos):
+                self.open = not self.open
+                self._drag = None
+                return speed
+
+            if not self.open:
+                return speed
+
+            # panel disina tiklandiysa kapat
+            if not pr.collidepoint(pos):
+                self.open = False
+                self._drag = None
+                return speed
+
+            # toggle: Ant Spawn
+            tr1 = self._toggle_rect(pr, 0)
+            if tr1.collidepoint(pos):
+                sim.auto_spawn = not getattr(sim, "auto_spawn", True)
+                return speed
+
+            # toggle: Auto Food
+            tr2 = self._toggle_rect(pr, 1)
+            if tr2.collidepoint(pos):
+                sim.auto_food = not getattr(sim, "auto_food", True)
+                return speed
+
+            # toggle: Homing
+            tr3 = self._toggle_rect(pr, 2)
+            if tr3.collidepoint(pos):
+                sim.world.homing_enabled = not sim.world.homing_enabled
+                return speed
+
+            # tool butonlari (paint tool secimi)
+            for i, (tile_id, _, _col) in enumerate(self._TOOLS):
+                if self._tool_rects(pr)[i].collidepoint(pos):
+                    self.brush_tool = tile_id
+                    return speed
+
+            # slider tiklamasi baslat
+            for i, (sid, lbl, unit, lo, hi, log) in enumerate(self._SLIDERS):
+                row_y = pr.y + self.PAD + 132 + i * 52
+                track = self._track_rect(pr.x, row_y)
+                hit   = pygame.Rect(track.x - 8, track.y - 8,
+                                    track.w + 16, track.h + 16)
+                if hit.collidepoint(pos):
+                    self._drag = (sid, track, lo, hi, log)
+                    speed = self._apply_drag(pos[0], track, sid, lo, hi, log, sim, speed)
+                    return speed
+
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self._drag = None
+
+        elif event.type == pygame.MOUSEMOTION:
+            if self._drag:
+                sid, track, lo, hi, log = self._drag
+                speed = self._apply_drag(event.pos[0], track, sid, lo, hi, log, sim, speed)
+
+        return speed
+
+    def _apply_drag(self, mx, track, sid, lo, hi, log, sim, speed):
+        t   = (mx - track.x) / max(1, track.w)
+        val = self._t_to_val(t, lo, hi, log)
+        if sid == "speed":
+            speed = max(lo, min(hi, val))
+        elif sid == "food_val":
+            C.FOOD_SPAWN_AMOUNT = max(int(lo), min(int(hi), round(val)))
+        elif sid == "food_rate":
+            C.FOOD_SPAWN_INTERVAL = max(lo, min(hi, val))
+        return speed
+
+    # ---------------------------------------------------------------- toggle / tool yardimcilari
+    def _toggle_rect(self, pr, idx):
+        y = pr.y + self.PAD + 36 + idx * 36
+        return pygame.Rect(pr.x + self.PW - self.PAD - 64, y + 2, 62, 24)
+
+    def _tool_rects(self, pr):
+        """Her paint-tool butonu icin Rect listesi doner."""
+        n   = len(self._TOOLS)
+        bw  = (self.PW - self.PAD * 2 - (n - 1) * 6) // n
+        y   = pr.y + self.PH - self.PAD - 30
+        return [pygame.Rect(pr.x + self.PAD + i * (bw + 6), y, bw, 28)
+                for i in range(n)]
+
+    # ---------------------------------------------------------------- cizim
+    def draw(self, surf, sim, speed):
+        self._init_fonts()
+        fn, fs = self._font, self._sfont
+
+        # --- gear butonu ---
+        col_btn = (70, 90, 100) if self.open else (45, 50, 60)
+        pygame.draw.rect(surf, col_btn, self.btn, border_radius=8)
+        pygame.draw.rect(surf, (120, 140, 160), self.btn, 2, border_radius=8)
+        gear = fn.render("⚙", True, (220, 230, 240))
+        surf.blit(gear, gear.get_rect(center=self.btn.center))
+
+        if not self.open:
+            return
+
+        pr = self._panel_rect()
+
+        # --- panel arka plani ---
+        bg = pygame.Surface((pr.w, pr.h), pygame.SRCALPHA)
+        bg.fill((18, 20, 28, 230))
+        surf.blit(bg, pr.topleft)
+        pygame.draw.rect(surf, (80, 90, 110), pr, 2, border_radius=8)
+
+        # baslik
+        t = fn.render("Settings", True, (210, 220, 240))
+        surf.blit(t, (pr.x + self.PAD, pr.y + self.PAD))
+        pygame.draw.line(surf, (60, 70, 90),
+                         (pr.x + self.PAD, pr.y + 30),
+                         (pr.x + pr.w - self.PAD, pr.y + 30))
+
+        # --- toggle satirlari ---
+        toggles = [
+            ("Ant Spawn", getattr(sim, "auto_spawn", True)),
+            ("Auto Food", getattr(sim, "auto_food",  True)),
+            ("Homing",    getattr(sim.world, "homing_enabled", True)),
+        ]
+        for i, (lbl, state) in enumerate(toggles):
+            y = pr.y + self.PAD + 36 + i * 36
+            surf.blit(fs.render(lbl, True, (200, 210, 220)), (pr.x + self.PAD, y + 4))
+            tr = self._toggle_rect(pr, i)
+            tc = (40, 160, 80) if state else (140, 50, 50)
+            pygame.draw.rect(surf, tc, tr, border_radius=5)
+            pygame.draw.rect(surf, (90, 110, 130), tr, 1, border_radius=5)
+            on_off = fn.render("ON" if state else "OFF", True, (240, 240, 240))
+            surf.blit(on_off, on_off.get_rect(center=tr.center))
+
+        # ayirici
+        sep_y = pr.y + self.PAD + 36 + 3 * 36 + 6
+        pygame.draw.line(surf, (60, 70, 90),
+                         (pr.x + self.PAD, sep_y),
+                         (pr.x + pr.w - self.PAD, sep_y))
+
+        # --- slider satirlari ---
+        vals = [speed, float(C.FOOD_SPAWN_AMOUNT), float(C.FOOD_SPAWN_INTERVAL)]
+        for i, ((sid, lbl, unit, lo, hi, log), val) in enumerate(
+                zip(self._SLIDERS, vals)):
+            row_y = pr.y + self.PAD + 132 + i * 52
+            # etiket
+            surf.blit(fs.render(lbl, True, (190, 205, 220)),
+                      (pr.x + self.PAD, row_y))
+            # deger metni
+            if sid == "speed":
+                vtxt = f"x{val:.2g}"
+            elif sid == "food_rate":
+                vtxt = f"{val:.0f}s"
+            else:
+                vtxt = str(int(val))
+            surf.blit(fn.render(vtxt, True, (240, 240, 160)),
+                      (pr.x + pr.w - self.PAD - 42, row_y))
+            # track
+            track = self._track_rect(pr.x, row_y)
+            pygame.draw.rect(surf, (50, 55, 70), track, border_radius=4)
+            t = self._val_to_t(val, lo, hi, log)
+            t = max(0.0, min(1.0, t))
+            fx = int(track.x + t * track.w)
+            filled = pygame.Rect(track.x, track.y, fx - track.x, track.h)
+            if filled.w > 0:
+                pygame.draw.rect(surf, (70, 140, 200), filled, border_radius=4)
+            pygame.draw.circle(surf, (210, 230, 255), (fx, track.centery), 7)
+            pygame.draw.circle(surf, (100, 130, 170), (fx, track.centery), 7, 2)
+
+        # --- paint tool secici ---
+        sep2_y = pr.y + self.PH - self.PAD - 30 - 10
+        pygame.draw.line(surf, (60, 70, 90),
+                         (pr.x + self.PAD, sep2_y),
+                         (pr.x + pr.w - self.PAD, sep2_y))
+        surf.blit(fs.render("Mid-click tool:", True, (180, 190, 200)),
+                  (pr.x + self.PAD, sep2_y + 4))
+        tool_rects = self._tool_rects(pr)
+        for i, ((tile_id, lbl, col), rect) in enumerate(zip(self._TOOLS, tool_rects)):
+            active = (self.brush_tool == tile_id)
+            bg_col = tuple(min(255, c + 40) for c in col) if active else col
+            pygame.draw.rect(surf, bg_col, rect, border_radius=5)
+            brd = (255, 240, 100) if active else (70, 80, 95)
+            pygame.draw.rect(surf, brd, rect, 2 if active else 1, border_radius=5)
+            txt = fn.render(lbl, True, (240, 240, 240))
+            surf.blit(txt, txt.get_rect(center=rect.center))

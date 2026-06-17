@@ -51,8 +51,8 @@ COLORS = {
     OBSTACLE: (70, 55, 45),
     NEST: (200, 150, 60),
 }
-GRID_LINE_COLOR = (186, 57, 147)
-BG_COLOR = (72 , 111 , 56 )
+GRID_LINE_COLOR = (30, 60, 30)
+BG_COLOR = (15, 38, 15)
 
 # ---------------------------------------------------------------------------
 # Karinca / hareket
@@ -120,8 +120,11 @@ CHEM_GRAD_NORM = 120.0           # gradyan buyuklugu normalizasyon carpani (~0..
 
 # Besin kokusu: yokus-yukari yon (sin, cos) + buyukluk + yerel deger = 4
 ODOR_INPUTS = 4
-# TEK feromon: yokus-yukari yon (sin, cos) + yerel deger = 3
-PHEROMONE_INPUTS = 3
+# Food feromonu (iz takibi): yokus-yukari yon (sin, cos) + yerel deger = 3
+PH_FOOD_INPUTS = 3
+# Home feromonu: yerel deger (homing zaten yon veriyor, fazlasi gereksiz) = 1
+PH_HOME_INPUTS = 1
+PHEROMONE_INPUTS = PH_FOOD_INPUTS + PH_HOME_INPUTS
 
 # Ek girisler: tasiyor_mu, enerji
 EXTRA_INPUTS = 2
@@ -130,19 +133,33 @@ INPUT_SIZE = (VISION_INPUTS + HOMING_INPUTS
               + PHEROMONE_INPUTS + ODOR_INPUTS + EXTRA_INPUTS)
 
 # ---------------------------------------------------------------------------
-# Feromon (TEK alan) - karincalar antenle koklar
+# Feromon (karincalar antenle koklar; gercek karinca davranisinin temeli)
 # ---------------------------------------------------------------------------
-# TEK bir feromon izi: tum karincalar ayni alana birakir; uzerinden gecildikce
-# GUCLENIR (birikim, PH_MAX'a kadar). Buharlasma cok yavas -> izler kalici.
-# Birakim ZAYIF tutulur ki dusuk-trafik bolgeler boyanmasin; sadece sik
-# kullanilan yollar zamanla guclensin. Besin TASIYAN karinca 10x daha fazla birakir.
-PH_DEPOSIT_BASE = 0.04      # bos gezen karincanin KAT EDILEN PIKSEL basina birakimi.
-                            # Hareketle orantili -> sabit/donerken/titrerken birakmaz.
-PH_CARRY_MULT = 15.0        # besin TASIYAN karinca bu kat daha fazla birakir
-PH_EVAPORATION = 0.02     # saniyelik buharlasma (0.0003'ten 5x hizlandirildi)
-PH_MAX = 200.0              # feromon tavani (normalize + birikim siniri)
-# Goruntu: bu yogunlugun ustu "guclu iz" sayilir (parlak/mor cizilir)
-PH_STRONG_THRESH = 140.0
+# Iki alan: HOME izi (besin tasimayan/aranan karincalar birakir) ve
+# FOOD izi (besin tasiyan karincalar birakir -> digerleri besine ulasir).
+PH_HOME = 0
+PH_FOOD = 1
+PH_DEPOSIT_HOME = 3.0       # adim basina home feromon birakimi
+PH_DEPOSIT_FOOD = 14.0      # adim basina food feromon birakimi
+# Cok besin teslim etmis (basarili) karincalar DAHA GUCLU iz birakir:
+# birakim = PH_DEPOSIT_FOOD * (1 + food_delivered * PH_SUCCESS_FACTOR)
+PH_SUCCESS_FACTOR = 0.5
+# Besin feromonu IZ UZUNLUGU: besin aldiktan sonra bu mesafe boyunca birakilir.
+# Eski deger (1500) tum haritaya leke birakiyordu -> gradyan yoktu. Kisaltildi:
+# iz sadece besine yakin bolgede kalir, KESKIN bir "besine giden ok" olusur.
+PH_FOOD_TRAIL_DIST = 600.0   # piksel (~30 hucre) (1500'den dusuruldu)
+PH_HOME_EVAPORATION = 0.06   # home feromonu saniyelik buharlasma orani
+# Besin feromonu buharlasmasi artirildi: KULLANILMAYAN izler ~1 dk'da soluyor,
+# sadece tekrar tekrar pekistirilen (gercek) yollar kalici olur -> keskin iz.
+PH_FOOD_EVAPORATION = 0.012  # besin feromonu saniyelik buharlasma orani (0.005'ten)
+PH_MAX = 200.0              # feromon tavani (normalize icin)
+# "Super iz" (yogun besin yolu): esigin ustundeki guclu izler COK daha yavas
+# buharlasir ve MOR renge doner -> sik kullanilan besin yollari kalici olur.
+PH_FOOD_STRONG_THRESH = 165.0   # bu yogunlugun ustu "super iz" sayilir (zorlaştirildi: 110->165)
+PH_FOOD_STRONG_EVAP_MULT = 0.12 # super izde buharlasma carpani (cok yavas)
+# Yayilim (difuzyon) izleri genisletir -> yon algisini bozar. Cok seyrek tutulur
+# ki izler KESKIN kalsin ve karincalar yonu (sol/orta/sag anten) ayirt edebilsin.
+PH_DIFFUSE_EVERY = 8.0      # neredeyse kapali (sadece cok nadir hafif yumusatma)
 
 # ---------------------------------------------------------------------------
 # Besin kokusu (statik koku alani)
@@ -154,8 +171,16 @@ PH_STRONG_THRESH = 140.0
 # Menzil 25 -> harita capinda neredeyse global koku -> gradyan duzlesir, yon yok.
 # 12'ye dusuruldu: koku YEREL ve YONLU olur; karinca yokus-yukari gercekten
 # ilerlemek zorunda kalir (yuva yaninda otomatik max koku farm'lanamaz).
-ODOR_RANGE_CELLS = 22       # koku menzili (hucre): 22 hucre x 20px = 440px yaricap
+ODOR_RANGE_CELLS = 100      # koku menzili (hucre) ~ HARITA CAPI. RL gradyani
+                            # DOGRUDAN takip ettigi icin GLOBAL koku alani gerekir:
+                            # boylece her yerden en yakin besine isaret eden yon
+                            # sinyali olusur -> zor-kesif sorunu cozulur (yon birim
+                            # normalize oldugu icin menzil buyuklugu zarar vermez).
 ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # (eski uyumluluk; artik gradyan kullaniliyor)
+# GORUNTU ayari (RL sinyaline dokunmaz): global koku alani ekranda neredeyse
+# duz bir yikamaya doner. Goruntude koku bu gamma ile guc egrisinden gecirilir
+# -> sadece besine YAKIN bolgeler parlar, tanınabilir koku bulutlari olusur.
+ODOR_DISPLAY_GAMMA = 6.0
 
 # ---------------------------------------------------------------------------
 # Besin davranisi
@@ -171,7 +196,59 @@ FOOD_MAX_AMOUNT = 999
 # bol ve yuvadan UZAKTA spawn -> koloni surekli uzak forage hedefi bulur.
 FOOD_SPAWN_INTERVAL = 25.0      # periyodik besin araligi
 FOOD_SPAWN_AMOUNT = 12          # her spawn'da birim sayisi (5'ten artirildi)
-FOOD_SPAWN_MIN_NEST_CELLS = 22  # spawn yuvadan en az bu kadar hucre uzakta olur (12'den artirildi)
+FOOD_SPAWN_MIN_NEST_CELLS = 12  # spawn yuvadan en az bu kadar hucre uzakta olur
+
+# ---------------------------------------------------------------------------
+# Egitim modu:  "dqn" (reinforcement learning) | "neuroevo" (genetik algoritma)
+# ---------------------------------------------------------------------------
+# DQN: tek PAYLASILAN Q-agi tum karincalarin ADIM-BASINA deneyiminden ogrenir
+# (TD kredi atamasi + epsilon-greedy kesif). Neuroevrimin "gurultulu skaler
+# fitness" sorununu cozer. neuroevo: eski genetik algoritma yolu (yedek).
+TRAIN_MODE = "dqn"
+
+# --- DQN hiperparametreleri ---
+RL_HIDDEN = 64                  # Q-agi gizli katman boyutu (gradyanla egitildigi
+                                # icin neuroevrimden daha buyuk olabilir)
+RL_GAMMA = 0.99                 # gelecek odul indirim faktoru
+RL_LR = 5e-4                    # Adam ogrenme orani
+RL_BUFFER = 80000               # deneyim tekrar bellegi kapasitesi
+RL_BATCH = 64                   # minibatch boyutu
+RL_MIN_BUFFER = 2000            # egitime baslamadan once gereken min gecis
+RL_TARGET_SYNC = 1000           # bu kadar gradyan adiminda bir hedef ag senkronu
+RL_TRAIN_PER_STEP = 2           # her sim-adiminda kac gradyan adimi (ogrenmeyi hizlandir)
+# Per-ant (Ape-X tarzi) DAGITIK kesif: her karinca DOGUMUNDA kendi SABIT
+# epsilon'unu [RL_EPS_MIN, RL_EPS_MAX] arasindan log-uniform alir. Boylece HER AN
+# bir kismi cok kesfeder, bir kismi somurur -> kesif ASLA olmez (global epsilon
+# tabanina sikismaz). Yeni haritada da otomatik kesif olur; buffer dolsa da
+# yuksek-epsilon karincalar yeni deneyim uretmeye devam eder.
+RL_EPS_MIN = 0.05              # en somurucu karincalarin epsilon'u
+RL_EPS_MAX = 0.60             # en kasifci karincalarin epsilon'u
+RL_AGENT_FILE = "models/dqn_agent.npz"   # ag agirliklari (kosular arasi tasinir)
+RL_POP = 40                     # ayni anda hareket eden (deneyim ureten) karinca sayisi
+
+# --- DQN odul sekillendirme (potansiyel-tabanli + olay odulleri) ---
+# Potansiyel-tabanli sekillendirme (F = gamma*phi(s') - phi(s)) farm'a kapalidir
+# (teleskopik): bos gezerken phi=koku+iz, tasirken phi=-yuva_mesafesi. Olay
+# odulleri (bulma/teslim) ve cezalar (duvar/kenar) ustune eklenir.
+RL_SHAPE_W = 16.0               # potansiyel-tabanli sekillendirme agirligi
+RL_RETURN_SCALE = 0.25          # tasima potansiyeli olcek: yuvadan max_d*bu kadar
+                                # uzakta -1'e doyar -> donus gradyani dik/ogrenilebilir
+RL_CARRY_FRAC = 0.5             # minibatch'in bu orani 'tasima' tamponundan gelir
+                                # (sinif dengesizligi: donus gecisleri nadirdir)
+RL_STEP_COST = 0.0              # adim maliyeti KALDIRILDI (seyrek teslim sinyalini boguyordu;
+                                # verimlilik baskisi once forage ogrenildikten sonra eklenir)
+# RL curriculum: yuvaya YAKIN besin -> kisa tur -> ilk teslimatlar orneklenir
+# (bootstrap). Ogrenilince uzun-mesafe forage'a genellesir.
+RL_NEAR_FOOD_EVERY = 7.0        # bu kadar sim-sn'de bir yuva yakinina besin koy
+RL_NEAR_FOOD_CELLS = 13         # yuvadan en fazla bu kadar hucre uzaga
+RL_NEAR_FOOD_AMOUNT = 8         # yakin besin kaynagi miktari
+RL_NEAR_FOOD_MAX = 4            # ayni anda en fazla bu kadar yakin kaynak tutulur
+RL_FIND_W = 0.015               # besin bulma odulu (yuvadan uzaklik basina)
+RL_DELIVER_R = 10.0             # teslim sabit odulu (en buyuk)
+RL_DELIVER_DIST_W = 0.012       # teslim mesafe-olcekli ek odulu
+RL_WALL_PEN = 0.15              # duvara/tasa carpma cezasi (adim basina)
+RL_BORDER_PEN = 0.25            # en dis cerceveye carpma ek cezasi
+RL_IDLE_PEN = 0.02              # 'bekle' aksiyonu kucuk cezasi
 
 # ---------------------------------------------------------------------------
 # Sinir agi:  girdi -> Dense(encoder) -> LSTM -> Dense(cikis) -> argmax
@@ -216,12 +293,12 @@ OFFSPRING_PER_DELIVERY = 3      # her teslim eden karincadan kac yavru
 N_PARENTS = 2                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
 # Calkalanma dizginlendi: cok yuksek mutasyon ogrenileni bozuyordu (erken iyi,
 # sonra cokus). Kararli rafine icin geri cekildi.
-MUTATION_RATE = 0.03            # fine-tune: gen basina mutasyon olasiligi
-MUTATION_SCALE = 0.05           # fine-tune: kucuk gauss gurultusu, buyuk sapma yok
+MUTATION_RATE = 0.07            # gen basina mutasyon olasiligi (0.10'dan dusuruldu)
+MUTATION_SCALE = 0.15           # mutasyon gauss siddeti (0.20'den dusuruldu)
 # _reinforce'ta tamamen rastgele genom enjeksiyon orani (cesitlilik vs kararlilik)
-REINFORCE_RANDOM_FRAC = 0.02    # fine-tune: cok az rastgele giris, elit yapiyi koru
+REINFORCE_RANDOM_FRAC = 0.10    # 0.25'ten dusuruldu -> elitler daha cok korunur
 # _on_delivery'de HOF uyesiyle crossover olasiligi (yavru cesitliligi)
-DELIVERY_CROSSOVER_FRAC = 0.10  # fine-tune: az caprazlama, cogunlukla klon+mutasyon
+DELIVERY_CROSSOVER_FRAC = 0.30  # 0.40'tan dusuruldu
 
 # Fitness takviyesi: populasyon dususte rastgele yerine TUM ZAMANLARIN EN IYI
 # karincalarindan (hall of fame) ureme yapilir. Olen karincalarin yerine
@@ -232,17 +309,16 @@ HOF_OFFER_EVERY = 0.5          # yasayan en iyi karinca bu sikligla onur listesi
 # fitness = teslim*(DELIVER_W + mesafe) + (mesafeye gore bulma) + odul_sekil.
 # Teslim odulu de mesafeye gore olceklenir: yuva yaninda topla-getir (kisa tur)
 # uzun-mesafe forage ile AYNI puani vermesin -> gercek forager'lar HOF'a girer.
-FITNESS_DELIVER_W = 4.0        # teslim basina sabit odul (azaltildi; agirlik mesafeye kaydi)
-FITNESS_DELIVER_DIST_W = 0.06  # teslim mesafesi odulu: uzaktan getirmek cok daha degerli (2x artirildi)
+FITNESS_DELIVER_W = 8.0        # teslim basina sabit odul
+FITNESS_DELIVER_DIST_W = 0.02  # teslim edilen besin yuvadan ne kadar uzaktaysa o kadar ek odul
 # Besin bulma odulu YUVADAN UZAKLIGA gore olceklenir. Sabit taban KALDIRILDI
 # (1.0 -> 0): yuvaya cok yakin besin bulmak neredeyse 0 puan -> nest-circling
 # stratejisi odulsuz kalir. Sadece uzaga giden forage odullenir.
 FITNESS_FIND_BASE = 0.0        # sabit taban kaldirildi (yakin besin ~0 puan)
-FITNESS_FIND_DIST_W = 0.06     # piksel basina odul (yuvadan uzaklik) (artirildi)
+FITNESS_FIND_DIST_W = 0.04     # piksel basina odul (yuvadan uzaklik) (artirildi)
 
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
-EXPLORE_REWARD_W = 0.012       # bos gezerken yuvadan UZAKLASTIKCA odul (piksel basina ratchet)
 # Koku takibini OGRETEN odul: bos gezerken besin kokusunu tirmandikca puan.
 FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
 # IZ TAKIP odulu (YENI): bos gezerken food-feromon gradyaninin YOKUS-YUKARI

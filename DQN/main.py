@@ -29,8 +29,10 @@ import config as C
 from world import World, make_default_world, make_random_world
 from simulation import Simulation
 from model_bank import ModelBank
+from dqn_sim import DQNSimulation
+from dqn import DQNAgent
 from camera import Camera
-from renderer import Renderer, SettingsPanel
+from renderer import Renderer
 from recorder import Recorder
 from map_editor import MapEditor
 from stats_view import show_stats_screen
@@ -112,6 +114,18 @@ def create_random_map():
     return path
 
 
+def make_sim(world, map_name, shared):
+    """Egitim moduna gore dogru simulasyonu kurar. 'shared' ogrenen nesne
+    (DQN ajani veya neuroevo model bankasi) haritalar arasi tasinir."""
+    if C.TRAIN_MODE == "dqn":
+        if shared is None:
+            shared = DQNAgent(C.INPUT_SIZE, C.OUTPUT_SIZE)
+        return DQNSimulation(world=world, map_name=map_name, agent=shared), shared
+    if shared is None:
+        shared = ModelBank()
+    return Simulation(world=world, map_name=map_name, bank=shared), shared
+
+
 # ===========================================================================
 # Menu
 # ===========================================================================
@@ -126,7 +140,7 @@ def run_menu(screen):
     buttons = [("Start Simulation (new)", "sim")]
     if has_demos:
         buttons.append(("Demo History", "demos"))
-    buttons += [("Select Map", "maps"), ("Map Editor", "editor"), ("Quit", "quit")]
+    buttons += [("Map Editor", "editor"), ("Quit", "quit")]
 
     rects = []
     y = 300
@@ -156,7 +170,10 @@ def run_menu(screen):
         screen.fill((20, 18, 16))
         title = font_big.render("ANT  NEUROEVOLUTION", True, (235, 200, 110))
         screen.blit(title, title.get_rect(center=(cx, 150)))
-        sub = font.render("Dense + LSTM + Genetic Algorithm  /  pygame", True, (170, 170, 170))
+        mode_txt = ("Deep Q-Network (Reinforcement Learning)  /  pygame"
+                    if C.TRAIN_MODE == "dqn"
+                    else "Dense MLP + Genetic Algorithm  /  pygame")
+        sub = font.render(mode_txt, True, (170, 170, 170))
         screen.blit(sub, sub.get_rect(center=(cx, 205)))
 
         for r, action, label in rects:
@@ -333,30 +350,29 @@ def run_simulation(screen, resume_path=None, map_path=None):
     flash_text = ""
     flash_timer = 0.0
 
-    # model bankasi: onceki kosularin en iyi genomlari (haritalar arasi tasinir)
-    bank = ModelBank()
+    # ogrenen nesne (DQN ajani veya neuroevo model bankasi) - haritalar arasi tasinir
+    shared = None
     map_path = map_path or C.MAP_FILE
     map_name = os.path.basename(map_path)
 
-    if resume_path and os.path.exists(resume_path):
+    if (resume_path and os.path.exists(resume_path)
+            and C.TRAIN_MODE != "dqn"):
         try:
-            sim = Simulation.load(resume_path, bank=bank)
+            shared = ModelBank()
+            sim = Simulation.load(resume_path, bank=shared)
             flash_text = f"Resumed: t={int(sim.sim_time)}s  gen={sim.generation}"
             flash_timer = 3.0
             print(f"[SIM] Resumed from {resume_path}: t={int(sim.sim_time)}s")
         except Exception as e:
             print(f"[SIM] Load error ({e}), starting a new simulation")
-            sim = Simulation(world=load_world(map_path), map_name=map_name, bank=bank)
+            sim, shared = make_sim(load_world(map_path), map_name, None)
     else:
-        sim = Simulation(world=load_world(map_path), map_name=map_name, bank=bank)
+        sim, shared = make_sim(load_world(map_path), map_name, None)
 
     debug = False
     paused = False
     speed = C.SIM_SPEED_DEFAULT
     accumulator = 0.0
-    sim.auto_spawn = True
-    sim.auto_food  = True
-    settings = SettingsPanel()
 
     while True:
         dt = clock.tick(C.FPS) / 1000.0
@@ -365,28 +381,27 @@ def run_simulation(screen, resume_path=None, map_path=None):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 sim.save_bank(); recorder.stop(); return "quit"
-            speed = settings.handle_event(event, sim, speed)
-            if event.type == pygame.KEYDOWN:
+            elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     sim.save_bank(); recorder.stop(); return "menu"
-                elif event.key == pygame.K_m:          # harita sec
+                elif event.key == pygame.K_m:          # siradaki haritaya gec
+                    # mevcut kosunun en iyileri bankaya yazilir, yeni harita
+                    # yuklenir ve populasyon BANKADAN tohumlanarak yeniden baslar
                     sim.save_bank()
-                    selected = run_map_picker(screen)
-                    if selected == "quit":
-                        recorder.stop(); return "quit"
-                    elif isinstance(selected, str) and selected.endswith(".json"):
-                        map_path = selected
+                    maps = list_maps()
+                    if maps:
+                        cur = os.path.normpath(map_path)
+                        try:
+                            idx = [os.path.normpath(p) for p in maps].index(cur)
+                        except ValueError:
+                            idx = -1
+                        map_path = maps[(idx + 1) % len(maps)]
                         map_name = os.path.basename(map_path)
-                        sim = Simulation(world=load_world(map_path),
-                                         map_name=map_name, bank=bank)
-                        sim.auto_spawn = True
-                        sim.auto_food  = True
+                        sim, shared = make_sim(load_world(map_path), map_name, shared)
                         camera.reset()
-                        settings = SettingsPanel()
-                        flash_text = f"Map: {map_name} (bank'tan tohumlandi)"
+                        flash_text = f"Map: {map_name} (learner carried over)"
                         flash_timer = 3.0
                         print(f"[SIM] Switched to map {map_name}")
-                    # "menu" veya None -> mevcut simulasyona devam
                 elif event.key == pygame.K_d:
                     debug = not debug
                 elif event.key == pygame.K_z:
@@ -421,49 +436,11 @@ def run_simulation(screen, resume_path=None, map_path=None):
                 elif event.key == pygame.K_l:          # omur artir (+15sn)
                     C.LIFESPAN_MIN += 15.0
                     C.LIFESPAN_MAX += 15.0
-                elif event.key == pygame.K_f:          # ajan otomatik dogum toggle
-                    sim.auto_spawn = not sim.auto_spawn
-                    state = "ON" if sim.auto_spawn else "OFF"
-                    flash_text = f"Auto spawn: {state}"
-                    flash_timer = 2.0
-                elif event.key == pygame.K_g:          # besin otomatik spawn toggle
-                    sim.auto_food = not sim.auto_food
-                    state = "ON" if sim.auto_food else "OFF"
-                    flash_text = f"Auto food: {state}"
-                    flash_timer = 2.0
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:  # orta tik
-                wx, wy = camera.screen_to_world(*event.pos)
-                col = int(wx // C.CELL_SIZE)
-                row = int(wy // C.CELL_SIZE)
-                if 0 <= row < C.GRID_H and 0 <= col < C.GRID_W:
-                    tool = settings.brush_tool
-                    cur  = int(sim.world.grid[row, col])
-                    if cur == C.NEST:
-                        pass   # yuvaya dokunma
-                    elif tool == C.EMPTY:
-                        sim.world.grid[row, col]        = C.EMPTY
-                        sim.world.food_amount[row, col] = 0
-                        sim.world.odor_dirty = True
-                        flash_text = f"Erased ({col},{row})"
-                        flash_timer = 0.8
-                    elif tool == C.STONE:
-                        sim.world.grid[row, col]        = C.STONE
-                        sim.world.food_amount[row, col] = 0
-                        flash_text = f"Stone placed ({col},{row})"
-                        flash_timer = 0.8
-                    elif tool == C.FOOD:
-                        sim.world.grid[row, col]        = C.FOOD
-                        sim.world.food_amount[row, col] = C.FOOD_SPAWN_AMOUNT
-                        sim.world.odor_dirty = True
-                        flash_text = f"Food placed ({col},{row})"
-                        flash_timer = 0.8
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if not settings.btn.collidepoint(event.pos) and \
-                   not (settings.open and settings._panel_rect().collidepoint(event.pos)):
-                    wx, wy = camera.screen_to_world(*event.pos)
-                    ant = sim.select_at(wx, wy)
-                    if ant is not None:
-                        camera.follow = ant
+                wx, wy = camera.screen_to_world(*event.pos)
+                ant = sim.select_at(wx, wy)
+                if ant is not None:
+                    camera.follow = ant  # takip et
             elif event.type == pygame.MOUSEWHEEL:
                 camera.wheel_zoom(pygame.mouse.get_pos(), 1 if event.y > 0 else -1)
 
@@ -489,7 +466,6 @@ def run_simulation(screen, resume_path=None, map_path=None):
         renderer.draw_world(screen, sim.world, camera, debug=debug)
         renderer.draw_ants(screen, sim, camera, debug=debug)
         renderer.draw_hud(screen, sim, camera, debug, recorder, paused=paused, speed=speed)
-        settings.draw(screen, sim, speed)
 
         # gecici bildirim (kayit/devam)
         if flash_timer > 0:
@@ -504,11 +480,9 @@ def run_simulation(screen, resume_path=None, map_path=None):
 # Editor
 # ===========================================================================
 def run_editor(screen):
-    # Editoru bos harita ile ac; kullanici Load ile istedigini secebilir
-    # ya da mevcut default_map varsa onu on-yukle.
+    # mevcut haritayi yukle (varsa) ki uzerinde duzenleme yapilabilsin
     grid = None
     food_amount = None
-    map_name = "default_map"
     if os.path.exists(C.MAP_FILE):
         try:
             w = World.load(C.MAP_FILE)
@@ -516,7 +490,7 @@ def run_editor(screen):
             food_amount = w.food_amount
         except Exception:
             grid = None
-    editor = MapEditor(screen, grid=grid, food_amount=food_amount, map_name=map_name)
+    editor = MapEditor(screen, grid=grid, food_amount=food_amount)
     return editor.run()
 
 
@@ -541,10 +515,6 @@ def main():
             # a .pkl path means "resume this demo"
             if isinstance(state, str) and state.endswith(".pkl"):
                 state = run_simulation(screen, resume_path=state)
-        elif state == "maps":
-            state = run_map_picker(screen)
-            if isinstance(state, str) and state.endswith(".json"):
-                state = run_simulation(screen, map_path=state)
         elif state == "editor":
             state = run_editor(screen)
         elif state == "quit":

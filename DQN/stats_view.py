@@ -42,6 +42,21 @@ def _rate(history, key, window_s=None):
     return xs, rates
 
 
+def _smooth(ys, k=5):
+    """Hareketli ortalama (merkezli pencere) -> ani sicramalari yumusatir
+    ki egilim okunabilir olsun ('grafikleri normalize et')."""
+    n = len(ys)
+    if n < 3:
+        return ys
+    half = k // 2
+    out = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        out.append(sum(ys[lo:hi]) / (hi - lo))
+    return out
+
+
 def _draw_chart(surf, rect, font, small, title, xs, series):
     """series: list of (ys, color, label). xs: ortak x degerleri (zaman)."""
     x, y, w, h = rect
@@ -56,26 +71,37 @@ def _draw_chart(surf, rect, font, small, title, xs, series):
         return
 
     xmax = max(xs) or 1.0
-    ymax = _nice_max(max((max(ys) if ys else 0) for ys, _, _ in series))
+    # y aralizi: NEGATIF degerleri de destekle (ymin..ymax). Boylece negatif
+    # serilier (orn. DQN avg-return) grafigin altina tasmaz.
+    all_vals = [v for ys, _, _ in series for v in ys] or [0.0]
+    raw_max = max(all_vals)
+    raw_min = min(all_vals)
+    ymax = _nice_max(raw_max) if raw_max > 0 else (raw_max * 0.85 if raw_max < 0 else 1.0)
+    ymin = raw_min * 1.15 if raw_min < 0 else 0.0
+    span = (ymax - ymin) or 1.0
 
-    # eksenler + yatay izgara
+    def to_px(t, v):
+        sx = px + int(pw * (t / xmax))
+        sy = py + ph - int(ph * (v - ymin) / span)
+        return sx, sy
+
+    # eksenler + yatay izgara (ymin..ymax)
     for i in range(5):
         gy = py + ph - int(ph * i / 4)
         pygame.draw.line(surf, _GRID, (px, gy), (px + pw, gy), 1)
-        val = ymax * i / 4
-        lbl = small.render(f"{val:.0f}" if ymax >= 4 else f"{val:.1f}", True, _MUTED)
+        val = ymin + span * i / 4
+        lbl = small.render(f"{val:.0f}" if span >= 4 else f"{val:.1f}", True, _MUTED)
         surf.blit(lbl, (x + 6, gy - 8))
     pygame.draw.line(surf, _AXIS, (px, py), (px, py + ph), 1)
     pygame.draw.line(surf, _AXIS, (px, py + ph), (px + pw, py + ph), 1)
+    # sifir cizgisi (negatif/pozitif sinir) belirgin cizilir
+    if ymin < 0 < ymax:
+        zy = py + ph - int(ph * (0.0 - ymin) / span)
+        pygame.draw.line(surf, _AXIS, (px, zy), (px + pw, zy), 1)
     # x ekseni etiketleri (0 ve max sure)
     surf.blit(small.render("0s", True, _MUTED), (px - 4, py + ph + 4))
     tmax = small.render(f"{xmax:.0f}s", True, _MUTED)
     surf.blit(tmax, (px + pw - tmax.get_width(), py + ph + 4))
-
-    def to_px(t, v):
-        sx = px + int(pw * (t / xmax))
-        sy = py + ph - int(ph * (v / ymax))
-        return sx, sy
 
     # cizgiler
     for ys, color, _ in series:
@@ -104,65 +130,43 @@ def render_stats(surf, history, title, font, big, small):
                   (24, C.SCREEN_H - 30))
         return
 
-    xs   = [s["t"] for s in history]
+    xs = [s["t"] for s in history]
     last = history[-1]
-    picked_total    = last.get("picked", 0)
-    delivered_total = last["delivered"]
-    lost_total      = last.get("lost", 0)
     summary = (f"samples: {len(history)}   time: {int(last['t'])}s   "
-               f"gen: {last['gen']}   pop: {last['pop']}   "
-               f"picked: {picked_total}   delivered: {delivered_total}   "
-               f"lost: {lost_total}   best fitness: {last['hof_best']:.1f}")
+               f"generation: {last['gen']}   pop: {last['pop']}   "
+               f"births: {last['births']}   deaths: {last['deaths']}   "
+               f"delivered: {last['delivered']}   best fitness: {last['hof_best']:.1f}")
     surf.blit(font.render(summary, True, _TEXT), (24, 58))
 
-    # --- layout: 2x2 ust + tam genislik alt ---
-    m   = 18
-    top = 88
-    help_h = 24
-    total_h = C.SCREEN_H - top - help_h
-
-    # ust iki satir: her biri toplam yuksekligin %38'i
-    gh_top = int(total_h * 0.37)
-    gh_bot = total_h - gh_top * 2 - m * 3   # alt grafik daha yuksek
+    # 2x2 grafik izgarasi
+    m = 24
+    top = 92
     gw = (C.SCREEN_W - 3 * m) // 2
-
-    r1 = (m,         top,                       gw, gh_top)
-    r2 = (m*2 + gw,  top,                       gw, gh_top)
-    r3 = (m,         top + gh_top + m,           gw, gh_top)
-    r4 = (m*2 + gw,  top + gh_top + m,           gw, gh_top)
-    r5 = (m,         top + gh_top*2 + m*2,       C.SCREEN_W - 2*m, gh_bot)
+    gh = (C.SCREEN_H - top - 2 * m - 24) // 2
+    r1 = (m, top, gw, gh)
+    r2 = (m * 2 + gw, top, gw, gh)
+    r3 = (m, top + gh + m, gw, gh)
+    r4 = (m * 2 + gw, top + gh + m, gw, gh)
 
     win = int(C.STATS_RATE_WINDOW)
     _, br = _rate(history, "births")
     _, dr = _rate(history, "deaths")
     _, fr = _rate(history, "delivered")
+    br, dr, fr = _smooth(br), _smooth(dr), _smooth(fr)   # gurultulu oranlari yumusat
 
-    # -- 4 mevcut grafik --
     _draw_chart(surf, r1, font, small, f"Births / Deaths per {win}s", xs,
                 [(br, (90, 220, 110), "births"),
-                 (dr, (230, 90, 90),  "deaths")])
+                 (dr, (230, 90, 90), "deaths")])
     _draw_chart(surf, r2, font, small, "Births vs Deaths (cumulative)", xs,
-                [([s["births"]  for s in history], (90, 220, 110), "births"),
-                 ([s["deaths"]  for s in history], (230, 90, 90),  "deaths")])
+                [([s["births"] for s in history], (90, 220, 110), "births"),
+                 ([s["deaths"] for s in history], (230, 90, 90), "deaths")])
     _draw_chart(surf, r3, font, small, f"Food delivered per {win}s", xs,
                 [(fr, (240, 200, 80), "delivered")])
     _draw_chart(surf, r4, font, small, "Best fitness (hall of fame)", xs,
                 [([s["hof_best"] for s in history], (240, 150, 80), "best fitness")])
 
-    # -- 5. grafik: alinan vs ulasan vs kaybolan (pencere bazli) --
-    _, pr = _rate(history, "picked")
-    _, lr = _rate(history, "lost")
-    # "ulasmayan" = alinan - ulasan - kaybolan (tasiyan ama henuz yuva yolunda)
-    in_transit = [max(0, pr[i] - fr[i] - lr[i]) for i in range(len(xs))]
-    _draw_chart(surf, r5, font, small,
-                f"Food Journey per {win}s  —  picked | delivered | lost",
-                xs,
-                [(pr, (180, 180, 180), "picked"),
-                 (fr, (80,  210, 100), "delivered"),
-                 (lr, (230, 80,  80),  "lost")])
-
     surf.blit(small.render("E: export (PNG + CSV)    ESC / T / Enter: close", True, _MUTED),
-              (24, C.SCREEN_H - 22))
+              (24, C.SCREEN_H - 30))
 
 
 def export_stats(screen, history):
@@ -174,12 +178,10 @@ def export_stats(screen, history):
     pygame.image.save(screen, png)
     with open(csvp, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["t", "pop", "births", "deaths", "delivered",
-                    "picked", "lost", "hof_best", "gen"])
+        w.writerow(["t", "pop", "births", "deaths", "delivered", "hof_best", "gen"])
         for s in history:
             w.writerow([s["t"], s["pop"], s["births"], s["deaths"],
-                        s["delivered"], s.get("picked", ""), s.get("lost", ""),
-                        s["hof_best"], s["gen"]])
+                        s["delivered"], s["hof_best"], s["gen"]])
     print(f"[STATS] exported -> {png} , {csvp}")
     return png
 

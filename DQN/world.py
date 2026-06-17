@@ -40,10 +40,10 @@ class World:
         # FOOD olmayan yerlerde miktar 0
         self.food_amount[self.grid != C.FOOD] = 0
 
-        self.homing_enabled = True     # False: homing sinyali karincanin inputuna verilmez
-
-        # TEK feromon alani (tum karincalar buraya birakir; birikip guclenir)
-        self.ph = np.zeros((C.GRID_H, C.GRID_W), dtype=np.float32)
+        # feromon alanlari (home izi, food izi)
+        self.ph_home = np.zeros((C.GRID_H, C.GRID_W), dtype=np.float32)
+        self.ph_food = np.zeros((C.GRID_H, C.GRID_W), dtype=np.float32)
+        self._diffuse_acc = 0.0
 
         # besin kokusu (statik gradyan) - kaynaklardan yayilir
         self.food_odor = np.zeros((C.GRID_H, C.GRID_W), dtype=np.float32)
@@ -119,21 +119,22 @@ class World:
         return int(np.count_nonzero(self.grid == C.FOOD))
 
     # ------------------------------------------------------------- feromon
-    def deposit(self, x, y, amount):
-        """TEK feromon alanina ekler (birikim, PH_MAX tavanli)."""
+    def deposit(self, field, x, y, amount):
         if not self.in_bounds(x, y):
             return
         col = int(x // C.CELL_SIZE)
         row = int(y // C.CELL_SIZE)
-        self.ph[row, col] = min(C.PH_MAX, self.ph[row, col] + amount)
+        arr = self.ph_home if field == C.PH_HOME else self.ph_food
+        arr[row, col] = min(C.PH_MAX, arr[row, col] + amount)
 
-    def sample(self, x, y):
+    def sample(self, field, x, y):
         """Verilen konumdaki feromon yogunlugu (0..1 normalize)."""
         if not self.in_bounds(x, y):
             return 0.0
         col = int(x // C.CELL_SIZE)
         row = int(y // C.CELL_SIZE)
-        return float(self.ph[row, col]) / C.PH_MAX
+        arr = self.ph_home if field == C.PH_HOME else self.ph_food
+        return float(arr[row, col]) / C.PH_MAX
 
     # ------------------------------------------------ bilineer ornek + gradyan
     @staticmethod
@@ -163,9 +164,24 @@ class World:
         return gx, gy
 
     def update_pheromones(self, dt):
-        # TEK alan, cok yavas tekduze buharlasma (difuzyon yok -> izler keskin kalir,
-        # her yer boyanmaz; dusuk-trafik bolgeler zamanla yine de soluyor).
-        self.ph *= max(0.0, 1.0 - C.PH_EVAPORATION * dt)
+        # buharlasma
+        decay_home = max(0.0, 1.0 - C.PH_HOME_EVAPORATION * dt)
+        self.ph_home *= decay_home
+        # besin feromonu: "super iz" (esik ustu yogun yollar) cok daha yavas
+        # buharlasir -> sik kullanilan besin yollari kalici olur.
+        decay_food = max(0.0, 1.0 - C.PH_FOOD_EVAPORATION * dt)
+        decay_food_strong = max(0.0, 1.0 - C.PH_FOOD_EVAPORATION
+                                * C.PH_FOOD_STRONG_EVAP_MULT * dt)
+        strong = self.ph_food > C.PH_FOOD_STRONG_THRESH
+        self.ph_food = np.where(strong, self.ph_food * decay_food_strong,
+                                self.ph_food * decay_food)
+
+        # arada bir hafif yayilim (komsu ortalamasiyla)
+        self._diffuse_acc += dt
+        if self._diffuse_acc >= C.PH_DIFFUSE_EVERY:
+            self._diffuse_acc = 0.0
+            self.ph_home = self._diffuse(self.ph_home)
+            self.ph_food = self._diffuse(self.ph_food)
 
         # besin bittiyse koku gradyanini yeniden hesapla (kisilmis)
         if self.odor_dirty:
@@ -299,6 +315,32 @@ class World:
         far = empties[d >= C.FOOD_SPAWN_MIN_NEST_CELLS]
         pool = far if len(far) > 0 else empties
         r, c = pool[int(rng.integers(0, len(pool)))]
+        self.grid[r, c] = C.FOOD
+        self.food_amount[r, c] = int(amount)
+        self.odor_dirty = True
+        return (int(r), int(c))
+
+    def food_near_nest_count(self, max_cells):
+        """Yuvadan max_cells hucre icindeki FOOD hucre sayisi (RL bootstrap kontrolu)."""
+        ncol, nrow = self.nest_cell
+        ys, xs = np.where(self.grid == C.FOOD)
+        if len(xs) == 0:
+            return 0
+        d = np.hypot(xs - ncol, ys - nrow)
+        return int(np.count_nonzero(d <= max_cells))
+
+    def spawn_food_near_nest(self, rng, amount, max_cells):
+        """Yuvanin YAKININDA (max_cells icinde, ama yuvanin uzerinde degil) bos bir
+        hucrede besin olusturur. RL curriculum bootstrap'i icin (kisa tur)."""
+        ncol, nrow = self.nest_cell
+        empties = np.argwhere(self.grid == C.EMPTY)
+        if len(empties) == 0:
+            return None
+        d = np.hypot(empties[:, 1] - ncol, empties[:, 0] - nrow)
+        near = empties[(d <= max_cells) & (d >= 3.0)]
+        if len(near) == 0:
+            return None
+        r, c = near[int(rng.integers(0, len(near)))]
         self.grid[r, c] = C.FOOD
         self.food_amount[r, c] = int(amount)
         self.odor_dirty = True

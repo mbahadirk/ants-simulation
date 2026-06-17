@@ -51,13 +51,15 @@ class Ant:
         self.wall_hits = 0
         self.idle_steps = 0
 
-        # odul sekillendirme (reward shaping)
-        self.fitness_bonus = 0.0       # ilerleme odullerinin toplami
-        self.min_home_dist = None      # tasirken yuvaya ulasilan en kucuk mesafe
-        self.prev_home_dist = None     # tasirken bir onceki adimin yuva mesafesi
-        self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
-        self.max_food_ph_seen = 0.0    # bos gezerken ulasilan en guclu food-feromon izi
-        self.max_explore_dist = 0.0    # bos gezerken yuvadan ulasilan en uzak mesafe (keşif ratchet)
+        # odul (DQN: adim-basina; neuroevo: omur boyu toplam fitness_bonus)
+        self.fitness_bonus = 0.0       # tum adim-odullerinin toplami
+        self.last_reward = 0.0         # son adimin odulu (DQN gecisi icin)
+        self.epsilon = 0.0             # per-ant kesif orani (DQN'de doumda atanir)
+        self._max_d = float(np.hypot(C.WORLD_W, C.WORLD_H))  # potansiyel normalizasyonu
+        self.min_home_dist = None      # (eski neuroevo alanlari; save/load uyumu)
+        self.prev_home_dist = None
+        self.max_odor_seen = 0.0
+        self.max_food_ph_seen = 0.0
         self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
         self.last_find_dist = 0.0      # son bulunan besinin yuvadan uzakligi (teslim odulu icin)
 
@@ -172,14 +174,11 @@ class Ant:
         ndist = np.hypot(ndx, ndy)
         nrel = _wrap_angle(np.arctan2(ndy, ndx) - self.heading)
         max_d = np.hypot(C.WORLD_W, C.WORLD_H)
-        if getattr(world, "homing_enabled", True):
-            homing = np.array([
-                np.sin(nrel),
-                np.cos(nrel),
-                min(1.0, ndist / max_d),
-            ], dtype=np.float32)
-        else:
-            homing = np.zeros(3, dtype=np.float32)
+        homing = np.array([
+            np.sin(nrel),
+            np.cos(nrel),
+            min(1.0, ndist / max_d),
+        ], dtype=np.float32)
         # debug oku icin dunya koordinatlarinda yuva yonu (renderer kullanir)
         self._homing_world_angle = float(np.arctan2(ndy, ndx))
 
@@ -201,8 +200,9 @@ class Ant:
             mnorm = min(1.0, mag * C.CHEM_GRAD_NORM)
             return float(rel_sin), float(rel_cos), float(mnorm)
 
-        # besin kokusu: TASIRKEN koku ALINMAZ (0) -> karinca besin kokusunu
-        # kovalamaz, kafa karismaz, yuvaya donmeyi basarir.
+        # besin kokusu: yokus-yukari yon (sin,cos) + buyukluk + yerel deger.
+        # TASIRKEN koku girdisi SIFIRLANIR -> karinca besin kokusunu kovalamak
+        # yerine yuvaya (homing) doner; donus ogrenmesi cok kolaylasir.
         if self.carrying:
             odor = np.zeros(4, dtype=np.float32)
             o_local = 0.0
@@ -211,34 +211,55 @@ class Ant:
             o_local = world._bilinear(world.food_odor, self.x, self.y)
             odor = np.array([o_sin, o_cos, o_mag, o_local], dtype=np.float32)
 
-        # TEK feromon (iz): yokus-yukari yon (sin,cos) + yerel deger (0..1)
-        p_sin, p_cos, _p_mag = _grad_rel(world.ph)
-        p_local = min(1.0, world._bilinear(world.ph, self.x, self.y) / C.PH_MAX)
-        ph_in = np.array([p_sin, p_cos, p_local], dtype=np.float32)
+        # food feromonu (iz): yokus-yukari yon (sin,cos) + yerel deger (0..1)
+        f_sin, f_cos, _f_mag = _grad_rel(world.ph_food)
+        f_local = min(1.0, world._bilinear(world.ph_food, self.x, self.y) / C.PH_MAX)
+        ph_food_in = np.array([f_sin, f_cos, f_local], dtype=np.float32)
+
+        # home feromonu: sadece yerel deger (homing zaten yon veriyor)
+        h_local = min(1.0, world._bilinear(world.ph_home, self.x, self.y) / C.PH_MAX)
+        ph_home_in = np.array([h_local], dtype=np.float32)
 
         # debug paneli icin: karincanin gercekten algiladigi degerler
         self.last_odor = float(o_local)
-        self.last_food_ph = float(p_local)
+        self.last_food_ph = float(f_local)
 
         extra = np.array([
             1.0 if self.carrying else 0.0,
             self.energy,
         ], dtype=np.float32)
-        return np.concatenate([feats, homing, ph_in, odor, extra])
+        return np.concatenate([feats, homing, ph_food_in, ph_home_in, odor, extra])
+
+    # --------------------------------------------------------------- algila
+    def observe(self, world, neighbors):
+        """Durum vektoru (state) - DQN ajani ve neuroevo beyni ayni girdiyi alir."""
+        return self.sense(world, neighbors)
+
+    def _potential(self, world):
+        """Potansiyel-tabanli sekillendirme icin phi(s). Teleskopik (farm'a kapali):
+        bos gezerken 'isindikca' (koku+iz) artar; tasirken yuvaya yaklastikca artar.
+        Tasima potansiyeli DAHA DIK olceklenir (RL_RETURN_SCALE) -> adim-basina
+        donus gradyani foraging gradyaniyla kiyaslanabilir olur (yoksa ~8x zayif)."""
+        if self.carrying:
+            nd = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            return -min(1.0, nd / (self._max_d * C.RL_RETURN_SCALE))
+        # YALNIZCA besin kokusu tirmanmasi odullenir; feromon izi ODULLENMEZ
+        # (feromona yapisip titreme davranisini onlemek icin). Feromon hala
+        # algilanir (ag girdisi) ve birakilir, ama odule katkisi yoktur.
+        return float(world._bilinear(world.food_odor, self.x, self.y))
 
     # --------------------------------------------------------------- guncelle
-    def update(self, dt, world, neighbors):
-        """
-        Bir adim: algila -> dusun -> hareket et -> besin/aclik/yas islemleri.
-        Donus: olay sozlugu, orn. {'delivered': True} ureme icin sim tarafindan kullanilir.
-        """
+    def apply_action(self, action, dt, world, neighbors):
+        """Verilen aksiyonu uygula; ADIM-BASINA odulu hesaplayip self.last_reward'a
+        yazar (DQN gecisi icin) ve fitness_bonus'a ekler. Olay sozlugu doner."""
         events = {"delivered": False, "picked": False}
         if not self.alive:
+            self.last_reward = 0.0
             return events
 
-        obs = self.sense(world, neighbors)
-        action = self.brain.forward(obs)
         self.last_action = action
+        phi_old = self._potential(world)
+        carrying_before = self.carrying
 
         # --- hareket ---
         ox, oy = self.x, self.y
@@ -251,45 +272,36 @@ class Ant:
             moved = self._try_move(C.MOVE_SPEED * dt, world)
         elif action == C.ACTION_BACK:
             moved = self._try_move(-C.BACK_SPEED * dt, world)
-        # ACTION_NONE -> hareket yok
-
         self.heading = _wrap_angle(self.heading)
-        disp = np.hypot(self.x - ox, self.y - oy)  # bu adimda katedilen mesafe
+        disp = np.hypot(self.x - ox, self.y - oy)
 
-        # --- cezalar (enerji + fitness) ---
-        # duvara/tasa carpip ilerleyemediyse ceza
+        r = -C.RL_STEP_COST   # her adim kucuk maliyet (verimlilik tesviki)
+
+        # --- cezalar ---
         if action in (C.ACTION_FORWARD, C.ACTION_BACK) and not moved:
             self.energy -= C.WALL_PENALTY_RATE * dt
-            self.fitness_bonus -= C.WALL_FIT_PENALTY
             self.wall_hits += 1
-            # en dis cerceveye (harita kenari) carptiysa EK ceza
+            r -= C.RL_WALL_PEN
             cs = C.CELL_SIZE
             if (self.x < cs or self.x > C.WORLD_W - cs
                     or self.y < cs or self.y > C.WORLD_H - cs):
                 self.energy -= C.BORDER_PENALTY_RATE * dt
-                self.fitness_bonus -= C.BORDER_FIT_PENALTY
-        # 'bekle' (sabit durma) cezasi
+                r -= C.RL_BORDER_PEN
         if action == C.ACTION_NONE:
             self.energy -= C.IDLE_PENALTY_RATE * dt
-            self.fitness_bonus -= C.IDLE_FIT_PENALTY
             self.idle_steps += 1
+            r -= C.RL_IDLE_PEN
 
         # --- besin alma ---
         if not self.carrying and world.take_food(self.x, self.y):
             self.carrying = True
-            self.energy = C.ENERGY_MAX  # besin buldu -> aclik sifirlanir
+            self.energy = C.ENERGY_MAX
             self.food_found += 1
             events["picked"] = True
-            self.carry_distance = 0.0   # kisa feromon izi icin sifirla
-            # besin bulundugu yer yuvadan ne kadar uzaksa o kadar cok odul
+            self.carry_distance = 0.0
             dnest = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
-            self.fitness_bonus += C.FITNESS_FIND_BASE + dnest * C.FITNESS_FIND_DIST_W
-            self.last_find_dist = dnest    # teslim odulunu mesafeye gore olceklemek icin
-            # geri donus odulu icin baslangic mesafelerini kaydet
-            self.min_home_dist = dnest
-            self.prev_home_dist = dnest
-            self.max_explore_dist = 0.0   # yeni arayis: kesif ratchet'i sifirla
-            # besin bulan karincaya 1 omur (taban) kadar ek sure
+            self.last_find_dist = dnest
+            r += C.RL_FIND_W * dnest          # uzaktan bulmak daha degerli
             if C.LIFESPAN_FOOD_BONUS:
                 self.lifespan = min(self.lifespan + self.base_lifespan,
                                     self.base_lifespan * C.LIFESPAN_MAX_MULT)
@@ -300,49 +312,24 @@ class Ant:
             self.energy = C.ENERGY_MAX
             self.food_delivered += 1
             events["delivered"] = True
-            # teslim odulu MESAFEYE gore olceklenir: uzaktan getirmek cok daha degerli
-            self.fitness_bonus += (C.FITNESS_DELIVER_W
-                                   + self.last_find_dist * C.FITNESS_DELIVER_DIST_W)
-            self.min_home_dist = None
-            self.prev_home_dist = None
-            self.max_odor_seen = 0.0      # yeni arayis basliyor
-            self.max_food_ph_seen = 0.0   # iz takip ratchet'i sifirla
+            r += C.RL_DELIVER_R + self.last_find_dist * C.RL_DELIVER_DIST_W
 
-        # --- odul sekillendirme: dogru yonde ilerlemeyi odullendir ---
+        # --- potansiyel-tabanli sekillendirme (teleskopik, farm'a kapali) ---
+        # carrying durumu DEGISTIYSE potansiyel tabani degisir -> sahte sicrama
+        # olusur; o adimda sekillendirme atlanir (olay odulu zaten kredilendirdi).
+        phi_new = self._potential(world)
+        if self.carrying == carrying_before:
+            r += C.RL_SHAPE_W * (C.RL_GAMMA * phi_new - phi_old)
+
+        # --- feromon birak ---
         if self.carrying:
-            home_dist = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
-            # yuvaya YENI en yakin mesafeye ulastiysa odul
-            if self.min_home_dist is not None and home_dist < self.min_home_dist:
-                self.fitness_bonus += (self.min_home_dist - home_dist) * C.RETURN_REWARD_W
-                self.min_home_dist = home_dist
-            # besin tasirken yuvadan UZAKLASTIYSA ceza (yemi alip donmeyenler elenir)
-            if self.prev_home_dist is not None and home_dist > self.prev_home_dist:
-                self.fitness_bonus -= (home_dist - self.prev_home_dist) * C.CARRY_AWAY_PENALTY_W
-            self.prev_home_dist = home_dist
+            self.carry_distance += disp
+            if self.carry_distance <= C.PH_FOOD_TRAIL_DIST:
+                strength = 1.0 + self.food_delivered * C.PH_SUCCESS_FACTOR
+                world.deposit(C.PH_FOOD, self.x, self.y,
+                              C.PH_DEPOSIT_FOOD * strength * dt * 60)
         else:
-            # bos gezerken besin kokusunu YENI en yuksek seviyeye tirmandiysa odul
-            if self.last_odor > self.max_odor_seen:
-                self.fitness_bonus += (self.last_odor - self.max_odor_seen) * C.FORAGE_REWARD_W
-                self.max_odor_seen = self.last_odor
-            # IZ TAKIP odulu: daha GUCLU bir food-feromon izine ulastiysa odul.
-            # Ratchet (sadece yeni en yuksek) -> yerinde salinarak farm edilemez;
-            # gercekten basarili karincalarin birden izine girmeyi odullendirir.
-            if self.last_food_ph > self.max_food_ph_seen:
-                self.fitness_bonus += (self.last_food_ph - self.max_food_ph_seen) * C.TRAIL_FOLLOW_W
-                self.max_food_ph_seen = self.last_food_ph
-            # KESIF odulu: yuvadan hic gidilmemis en uzak mesafeye ulasilirsa odul.
-            # Ratchet -> ayni yerde donarak farm edilemez; gercekten uzaga gideni oduller.
-            cur_dist = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
-            if cur_dist > self.max_explore_dist:
-                self.fitness_bonus += (cur_dist - self.max_explore_dist) * C.EXPLORE_REWARD_W
-                self.max_explore_dist = cur_dist
-
-        # --- feromon birak (TEK alan; besin TASIYAN karinca 10x daha fazla) ---
-        # Birakim KAT EDILEN MESAFEYLE (disp) orantili -> sabit durunca/donerken/
-        # titreyince (disp~0) feromon birakilmaz; ayni yere devasa yigilma olmaz.
-        if disp > 1e-3:
-            amount = C.PH_DEPOSIT_BASE * (C.PH_CARRY_MULT if self.carrying else 1.0)
-            world.deposit(self.x, self.y, amount * disp)
+            world.deposit(C.PH_HOME, self.x, self.y, C.PH_DEPOSIT_HOME * dt * 60)
 
         # --- enerji / yas ---
         self.energy -= dt / C.STARVE_TIME
@@ -350,7 +337,18 @@ class Ant:
         if self.energy <= 0.0 or self.age >= self.lifespan:
             self.alive = False
 
+        self.last_reward = float(r)
+        self.fitness_bonus += r
         return events
+
+    def update(self, dt, world, neighbors):
+        """Neuroevo yolu: algila -> beyin karar verir -> uygula. (DQN'de sim
+        aksiyonu paylasilan ajandan secip apply_action'i dogrudan cagirir.)"""
+        if not self.alive:
+            return {"delivered": False, "picked": False}
+        obs = self.observe(world, neighbors)
+        action = self.brain.forward(obs)
+        return self.apply_action(action, dt, world, neighbors)
 
     def _try_move(self, dist, world):
         """Hareketi dener; en az bir eksende ilerlediyse True, tamamen blokeyse False."""
