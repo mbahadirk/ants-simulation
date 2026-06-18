@@ -13,10 +13,11 @@ import numpy as np
 import config as C
 from neural_network import make_brain
 
-# Nesne tipi -> sektor one-hot indeksi (0:besin 1:engelli[tas|engel] 2:karinca)
-# Yuva goruten cikarildi (homing girdisi zaten karsilar); tas+engel "engelli"de birlesti.
+# Nesne tipi -> sektor one-hot indeksi (0:besin 1:engelli[tas|engel])
+# Yuva goruste cikarildi (homing girdisi zaten karsilar); tas+engel "engelli"de birlesti.
+# Diger karincalar da goruste cikarildi (gereksiz gurultu; karinca-karinca
+# etkilesimi besin/koku/feromon uzerinden zaten dolayli olusur).
 _VIS_OBJ_INDEX = {C.FOOD: 0, C.STONE: 1, C.OBSTACLE: 1}
-_ANT_OBJ_INDEX = 2
 
 
 def _wrap_angle(a):
@@ -58,6 +59,9 @@ class Ant:
         self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
         self.max_food_ph_seen = 0.0    # bos gezerken ulasilan en guclu food-feromon izi
         self.max_explore_dist = 0.0    # bos gezerken yuvadan ulasilan en uzak mesafe (keşif ratchet)
+        self.min_food_sight_dist = None  # bos gezerken gorulen besine en yakin ulasilan mesafe
+        self.last_turn_dir = None      # son donus yonu (+1 sag, -1 sol) - titreme tespiti icin
+        self.turn_reversal_count = 0   # ardisik ters donus sayaci (gercek titreme tespiti)
         self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
         self.last_find_dist = 0.0      # son bulunan besinin yuvadan uzakligi (teslim odulu icin)
 
@@ -132,26 +136,6 @@ class Ant:
                     sect_dist[k] = dist
                     sect_idx[k] = oi
                     sect_pos[k] = (cx, cy)
-
-        # diger karincalar
-        for other in neighbors:
-            if other is self or not other.alive:
-                continue
-            dx = other.x - self.x
-            dy = other.y - self.y
-            dist = np.hypot(dx, dy)
-            if dist > rng or dist < 1e-3:
-                continue
-            rel = _wrap_angle(np.arctan2(dy, dx) - self.heading)
-            if abs(rel) > half_fov:
-                continue
-            k = int((rel + half_fov) / bin_w)
-            if k >= ns:
-                k = ns - 1
-            if dist < sect_dist[k]:
-                sect_dist[k] = dist
-                sect_idx[k] = _ANT_OBJ_INDEX
-                sect_pos[k] = (other.x, other.y)
 
         # gorus vektoru + debug bilgisi
         vis = np.zeros(C.VISION_INPUTS, dtype=np.float32)
@@ -274,6 +258,22 @@ class Ant:
             self.fitness_bonus -= C.IDLE_FIT_PENALTY
             self.idle_steps += 1
 
+        # sag-sol salinim (titreme) cezasi: TEK bir ters donus normal bir
+        # duzeltme hareketi olabilir (dar bosluktan gecerken / besine hassas
+        # hizalanirken). Sadece ARDISIK 2+ ters donus (gercek titreme) ceza alir.
+        if action in (C.ACTION_LEFT, C.ACTION_RIGHT):
+            cur_turn = -1 if action == C.ACTION_LEFT else 1
+            if self.last_turn_dir is not None and cur_turn != self.last_turn_dir:
+                self.turn_reversal_count += 1
+                if self.turn_reversal_count >= 2:
+                    self.fitness_bonus -= C.JITTER_FIT_PENALTY
+            else:
+                self.turn_reversal_count = 0
+            self.last_turn_dir = cur_turn
+        else:
+            self.last_turn_dir = None   # ileri/geri/bekleme -> salinim zinciri kirilir
+            self.turn_reversal_count = 0
+
         # --- besin alma ---
         if not self.carrying and world.take_food(self.x, self.y):
             self.carrying = True
@@ -289,6 +289,7 @@ class Ant:
             self.min_home_dist = dnest
             self.prev_home_dist = dnest
             self.max_explore_dist = 0.0   # yeni arayis: kesif ratchet'i sifirla
+            self.min_food_sight_dist = None  # yeni arayis: odaklanma ratchet'i sifirla
             # besin bulan karincaya 1 omur (taban) kadar ek sure
             if C.LIFESPAN_FOOD_BONUS:
                 self.lifespan = min(self.lifespan + self.base_lifespan,
@@ -319,6 +320,14 @@ class Ant:
             if self.prev_home_dist is not None and home_dist > self.prev_home_dist:
                 self.fitness_bonus -= (home_dist - self.prev_home_dist) * C.CARRY_AWAY_PENALTY_W
             self.prev_home_dist = home_dist
+            # YUVAYA BAKMA odulu: homing acisi (nrel) ne kadar dusukse (yuva
+            # tam onunde) o kadar odul. disp ile CARPILIR -> sabit durup sadece
+            # bakarak farm edilemez; odul SADECE gercekten hareket ederken
+            # (kat edilen mesafeyle orantili) verilir.
+            if disp > 1e-3:
+                nrel = _wrap_angle(self._homing_world_angle - self.heading)
+                align = max(0.0, np.cos(nrel))   # 1.0 = yuva tam onunde, 0 = yan/arka
+                self.fitness_bonus += align * C.FACE_NEST_REWARD_W * disp
         else:
             # bos gezerken besin kokusunu YENI en yuksek seviyeye tirmandiysa odul
             if self.last_odor > self.max_odor_seen:
@@ -336,6 +345,18 @@ class Ant:
             if cur_dist > self.max_explore_dist:
                 self.fitness_bonus += (cur_dist - self.max_explore_dist) * C.EXPLORE_REWARD_W
                 self.max_explore_dist = cur_dist
+            # ODAKLANMA odulu: gorus alaninda besin varsa, ona olan mesafeyi
+            # kisalttiysa odul. Koku tirmanma genel yon verir ama besinin TAM
+            # USTUNE gitmeyi garanti etmez (yanindan gecebilir) -> bu odul
+            # gorulen besine dogrudan odaklanmayi/yaklasmayi tesvik eder.
+            food_dists = [d for (oi, _, _, d) in self.last_seen if oi == 0]
+            if food_dists:
+                nearest = min(food_dists)
+                if self.min_food_sight_dist is None or nearest < self.min_food_sight_dist:
+                    if self.min_food_sight_dist is not None:
+                        gain = self.min_food_sight_dist - nearest
+                        self.fitness_bonus += gain * C.FOOD_APPROACH_REWARD_W
+                    self.min_food_sight_dist = nearest
 
         # --- feromon birak (TEK alan; besin TASIYAN karinca 10x daha fazla) ---
         # Birakim KAT EDILEN MESAFEYLE (disp) orantili -> sabit durunca/donerken/

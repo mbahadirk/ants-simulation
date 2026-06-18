@@ -13,11 +13,10 @@ import config as C
 # ant.png yukari (north) bakiyor varsayilir; heading=0 (dogu) icin -90 ofset.
 ANT_IMG_OFFSET = -90
 
-# debug gorus renkleri (one-hot index -> renk): 0:besin 1:engelli(tas|engel) 2:karinca
+# debug gorus renkleri (one-hot index -> renk): 0:besin 1:engelli(tas|engel)
 VIS_OBJ_COLORS = [
     (230, 50, 50),     # besin
     (160, 160, 175),   # engelli (tas veya engel)
-    (240, 120, 200),   # karinca
 ]
 
 

@@ -84,11 +84,16 @@ IDLE_PENALTY_RATE = 0.0        # 'bekle' aksiyonu enerji TUKETMEZ (sadece fitnes
 #  2) Fitness cezasi: dogrudan basari puanini dusurur (secilim baskisi).
 WALL_FIT_PENALTY = 0.10        # adim basina duvara carpma fitness cezasi
 IDLE_FIT_PENALTY = 0.06        # adim basina sabit durma fitness cezasi
+# Sag-sol salinim (titreme) cezasi: TEK ters donus normal duzeltme sayilir
+# (cezasiz); sadece ARDISIK 2+ ters donus (gercek titreme) cezalandirilir.
+JITTER_FIT_PENALTY = 0.025     # adim basina titreme cezasi (0.04'ten dusuruldu)
 # En dis cerceveye (harita kenari) carpma EK cezasi (kenara sikismayi onler)
 BORDER_FIT_PENALTY = 0.22      # adim basina ek fitness cezasi (sadece dis cerceve)
 BORDER_PENALTY_RATE = 0.10     # saniyelik ek enerji cezasi (0.35'ten dusuruldu)
 # Besin TASIRKEN yuvadan UZAKLASMA cezasi (piksel basina) -> yemi alip donmeyenler elenir
-CARRY_AWAY_PENALTY_W = 0.05
+# KAPATILDI: tasi yan karincalarin tas/engel etrafindan dolanmasi gerektiginde
+# (gecici olarak yuvadan uzaklasmak sart) titreyip kilitlenmelerine sebep oluyordu.
+CARRY_AWAY_PENALTY_W = 0.0
 
 # ---------------------------------------------------------------------------
 # Gorus (180 derece SEKTOR tabanli, okluzyonlu)
@@ -100,9 +105,11 @@ CARRY_AWAY_PENALTY_W = 0.05
 VISION_RANGE = 130.0            # gorus yaricapi (piksel) ~6.5 hucre
 VISION_FOV = 3.141592653589793  # 180 derece (on yari daire)
 N_SECTORS = 8                   # gorus acisini kac dilime bolelim (12'den dusuruldu)
-N_VIS_OBJ = 3                   # one-hot tipler: besin, engelli(tas+engel), karinca
-# Her sektor: [yakinlik(0..1), besin, engelli, karinca] = 4
+N_VIS_OBJ = 2                   # one-hot tipler: besin, engelli(tas+engel)
+# Her sektor: [yakinlik(0..1), besin, engelli] = 3
 # Yuva gorusten cikti (homing girdisi zaten karsilior); tas+engel "engelli" olarak birlesti.
+# Diger karincalar da gorusten cikarildi: konum gurultusu yaratiyordu, ayrica
+# karinca-karinca etkilesimi feromon/koku uzerinden zaten dolayli var.
 SECTOR_FEATURES = 1 + N_VIS_OBJ
 VISION_INPUTS = N_SECTORS * SECTOR_FEATURES
 RAY_STEP = 6.0                  # (eski raycast yardimcisi icin)
@@ -185,7 +192,8 @@ FOOD_SPAWN_MIN_NEST_CELLS = 22  # spawn yuvadan en az bu kadar hucre uzakta olur
 # kucuk genom + puruzsuz fitness manzarasi -> neuroevrimde daha hizli/kararli ogrenme.
 # LSTM zamansal kredi atamasini zorlastirip arama uzayini sismelirir.
 BRAIN_ARCH = "mlp"
-MLP_HIDDEN = 20                 # MLP gizli katman boyutu (tek gizli katman, tanh)
+MLP_HIDDEN = 32                 # MLP gizli katman boyutu (20'den buyutuldu; daha fazla odul
+                                 # sekillendirme + girdi karisikligi icin kapasite artirildi)
 
 ENCODER_SIZE = 16               # (LSTM modunda) LSTM oncesi Dense kodlayici boyutu
 HIDDEN_SIZE = 12                # (LSTM modunda) LSTM gizli katman boyutu
@@ -242,6 +250,10 @@ FITNESS_FIND_DIST_W = 0.06     # piksel basina odul (yuvadan uzaklik) (artirildi
 
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
+# YUVAYA BAKMA odulu: tasirken homing acisi (nrel) dustukce (yuva one yakin)
+# odul artar. KAT EDILEN MESAFEYLE (disp) CARPILIR -> sabit durup sadece
+# yuvaya bakarak farm edilemez; odul ancak gercek hareketle birlikte gelir.
+FACE_NEST_REWARD_W = 0.05      # piksel basina odul (hizalanma * disp)
 EXPLORE_REWARD_W = 0.012       # bos gezerken yuvadan UZAKLASTIKCA odul (piksel basina ratchet)
 # Koku takibini OGRETEN odul: bos gezerken besin kokusunu tirmandikca puan.
 FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
@@ -250,6 +262,11 @@ FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..
 # secilim baskisi. Iz yoksa (basta) odul 0; basarili karincalar iz biraktikca
 # digerleri izi takip etmeyi ogrenir (gercek karinca pozitif geri beslemesi).
 TRAIL_FOLLOW_W = 9.0           # food-feromon gradyani yonunde hareket odulu
+# GORUNEN besine ODAKLANMA odulu (YENI): bos gezerken gorus alaninda besin
+# varsa, ona olan mesafeyi kisalttikca odul. Koku tirmanma genel yon verir
+# ama besinin TAM USTUNE gitmeyi garanti etmez -> karinca yanindan gecebilir.
+# Bu odul gorulen besine doğrudan odaklanmayi/yaklasmayi tesvik eder.
+FOOD_APPROACH_REWARD_W = 0.05  # piksel basina odul (ratchet, sadece yeni min mesafe)
 
 # ---------------------------------------------------------------------------
 # Kayit (recording)
