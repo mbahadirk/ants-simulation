@@ -59,7 +59,6 @@ class Ant:
         self.max_odor_seen = 0.0       # bos gezerken tirmanilan en yuksek koku
         self.max_food_ph_seen = 0.0    # bos gezerken ulasilan en guclu food-feromon izi
         self.max_explore_dist = 0.0    # bos gezerken yuvadan ulasilan en uzak mesafe (keşif ratchet)
-        self.min_food_sight_dist = None  # bos gezerken gorulen besine en yakin ulasilan mesafe
         self.last_turn_dir = None      # son donus yonu (+1 sag, -1 sol) - titreme tespiti icin
         self.turn_reversal_count = 0   # ardisik ters donus sayaci (gercek titreme tespiti)
         self.carry_distance = 0.0      # besin aldiktan sonra katedilen mesafe (kisa iz icin)
@@ -239,6 +238,7 @@ class Ant:
 
         self.heading = _wrap_angle(self.heading)
         disp = np.hypot(self.x - ox, self.y - oy)  # bu adimda katedilen mesafe
+        had_food = self.carrying  # bu adimin BASINDA tasiyor muydu (pickup/teslim henuz islenmedi)
 
         # --- cezalar (enerji + fitness) ---
         # duvara/tasa carpip ilerleyemediyse ceza
@@ -289,11 +289,15 @@ class Ant:
             self.min_home_dist = dnest
             self.prev_home_dist = dnest
             self.max_explore_dist = 0.0   # yeni arayis: kesif ratchet'i sifirla
-            self.min_food_sight_dist = None  # yeni arayis: odaklanma ratchet'i sifirla
             # besin bulan karincaya 1 omur (taban) kadar ek sure
             if C.LIFESPAN_FOOD_BONUS:
                 self.lifespan = min(self.lifespan + self.base_lifespan,
                                     self.base_lifespan * C.LIFESPAN_MAX_MULT)
+
+        # bu adimin BASINDA tasiyordu (had_food) -> kat edilen mesafe yol
+        # verimliligi (duz_mesafe / kat_edilen_mesafe) icin biriktirilir.
+        if had_food:
+            self.carry_distance += disp
 
         # --- yuvaya teslim ---
         if self.carrying and world.at_nest(self.x, self.y):
@@ -304,6 +308,11 @@ class Ant:
             # teslim odulu MESAFEYE gore olceklenir: uzaktan getirmek cok daha degerli
             self.fitness_bonus += (C.FITNESS_DELIVER_W
                                    + self.last_find_dist * C.FITNESS_DELIVER_DIST_W)
+            # YOL VERIMLILIGI odulu: duz hat mesafesine ne kadar yakin bir
+            # yol kat edildiyse o kadar ek odul (1.0 = mukemmel duz yol).
+            # Dolambacli/uzun donen yollar daha az verimlilik bonusu alir.
+            efficiency = min(1.0, self.last_find_dist / max(self.carry_distance, 1.0))
+            self.fitness_bonus += efficiency * C.PATH_EFFICIENCY_W
             self.min_home_dist = None
             self.prev_home_dist = None
             self.max_odor_seen = 0.0      # yeni arayis basliyor
@@ -345,18 +354,19 @@ class Ant:
             if cur_dist > self.max_explore_dist:
                 self.fitness_bonus += (cur_dist - self.max_explore_dist) * C.EXPLORE_REWARD_W
                 self.max_explore_dist = cur_dist
-            # ODAKLANMA odulu: gorus alaninda besin varsa, ona olan mesafeyi
-            # kisalttiysa odul. Koku tirmanma genel yon verir ama besinin TAM
-            # USTUNE gitmeyi garanti etmez (yanindan gecebilir) -> bu odul
-            # gorulen besine dogrudan odaklanmayi/yaklasmayi tesvik eder.
-            food_dists = [d for (oi, _, _, d) in self.last_seen if oi == 0]
-            if food_dists:
-                nearest = min(food_dists)
-                if self.min_food_sight_dist is None or nearest < self.min_food_sight_dist:
-                    if self.min_food_sight_dist is not None:
-                        gain = self.min_food_sight_dist - nearest
-                        self.fitness_bonus += gain * C.FOOD_APPROACH_REWARD_W
-                    self.min_food_sight_dist = nearest
+            # YONELME odulu: gorus alaninda besin varsa, ona dogru ACISAL
+            # HIZALANARAK hareket etmek odullenir (FACE_NEST_REWARD_W ile ayni
+            # desen). Sadece mesafe azalmasi yeterli degildi -> dolanarak da
+            # mesafe zaman zaman azalabiliyordu. Bu odul disp ile CARPILIR ->
+            # sabit durup besine bakarak farm edilemez; besine DOGRU yuruyen
+            # (yan/geri degil) karincalar odullenir.
+            if disp > 1e-3:
+                food_seen = [(ox_, oy_, d) for (oi, ox_, oy_, d) in self.last_seen if oi == 0]
+                if food_seen:
+                    fx, fy, _ = min(food_seen, key=lambda t: t[2])  # en yakin gorunen besin
+                    frel = _wrap_angle(np.arctan2(fy - self.y, fx - self.x) - self.heading)
+                    align = max(0.0, np.cos(frel))
+                    self.fitness_bonus += align * C.FOOD_FACE_REWARD_W * disp
 
         # --- feromon birak (TEK alan; besin TASIYAN karinca 10x daha fazla) ---
         # Birakim KAT EDILEN MESAFEYLE (disp) orantili -> sabit durunca/donerken/

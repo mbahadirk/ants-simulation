@@ -102,7 +102,9 @@ CARRY_AWAY_PENALTY_W = 0.0
 # Her dilimde o yondeki EN YAKIN nesne gorunur; arkasindaki nesneler bu yakin
 # nesne tarafindan GIZLENIR (okluzyon). Boylece bir tasin arkasindaki besin
 # gorunmez, ama 180 derece icindeki tum (farkli yonlerdeki) nesneler gorunur.
-VISION_RANGE = 130.0            # gorus yaricapi (piksel) ~6.5 hucre
+VISION_RANGE = 13.0             # gorus yaricapi (piksel) ~0.65 hucre - karincalar
+                                 # gercekte kor, "gorus" anten menzili kadar kisa
+                                 # (130'dan 1/10'a dusuruldu)
 VISION_FOV = 3.141592653589793  # 180 derece (on yari daire)
 N_SECTORS = 8                   # gorus acisini kac dilime bolelim (12'den dusuruldu)
 N_VIS_OBJ = 2                   # one-hot tipler: besin, engelli(tas+engel)
@@ -143,7 +145,7 @@ INPUT_SIZE = (VISION_INPUTS + HOMING_INPUTS
 # GUCLENIR (birikim, PH_MAX'a kadar). Buharlasma cok yavas -> izler kalici.
 # Birakim ZAYIF tutulur ki dusuk-trafik bolgeler boyanmasin; sadece sik
 # kullanilan yollar zamanla guclensin. Besin TASIYAN karinca 10x daha fazla birakir.
-PH_DEPOSIT_BASE = 0.04      # bos gezen karincanin KAT EDILEN PIKSEL basina birakimi.
+PH_DEPOSIT_BASE = 0.08      # bos gezen karincanin KAT EDILEN PIKSEL basina birakimi.
                             # Hareketle orantili -> sabit/donerken/titrerken birakmaz.
 PH_CARRY_MULT = 15.0        # besin TASIYAN karinca bu kat daha fazla birakir
 PH_EVAPORATION = 0.02     # saniyelik buharlasma (0.0003'ten 5x hizlandirildi)
@@ -161,7 +163,9 @@ PH_STRONG_THRESH = 140.0
 # Menzil 25 -> harita capinda neredeyse global koku -> gradyan duzlesir, yon yok.
 # 12'ye dusuruldu: koku YEREL ve YONLU olur; karinca yokus-yukari gercekten
 # ilerlemek zorunda kalir (yuva yaninda otomatik max koku farm'lanamaz).
-ODOR_RANGE_CELLS = 22       # koku menzili (hucre): 22 hucre x 20px = 440px yaricap
+ODOR_RANGE_CELLS = 32       # koku menzili (hucre): 32 hucre x 20px = 640px yaricap
+                            # (22'den artirildi: karincalar kor, koku duyusu daha
+                            # baskin/uzak menzilli olmali)
 ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # (eski uyumluluk; artik gradyan kullaniliyor)
 
 # ---------------------------------------------------------------------------
@@ -222,14 +226,15 @@ MAX_POP = 80                    # ust sinir
 # (mutasyonla) OFFSPRING_PER_DELIVERY adet yavru dogar.
 OFFSPRING_PER_DELIVERY = 3      # her teslim eden karincadan kac yavru
 N_PARENTS = 2                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
-# Calkalanma dizginlendi: cok yuksek mutasyon ogrenileni bozuyordu (erken iyi,
-# sonra cokus). Kararli rafine icin geri cekildi.
-MUTATION_RATE = 0.03            # fine-tune: gen basina mutasyon olasiligi
-MUTATION_SCALE = 0.05           # fine-tune: kucuk gauss gurultusu, buyuk sapma yok
+# KESIFCI moda geri donuldu: reward fonksiyonu cok degisti, populasyon eski
+# (dusuk cesitlilik) ayarlarla erken yakinsamis ve fitness duz cizgi olmustu.
+# Sifirdan baslayan yeni egitim icin daha yuksek mutasyon/cesitlilik.
+MUTATION_RATE = 0.08             # kesif: gen basina mutasyon olasiligi
+MUTATION_SCALE = 0.18            # kesif: daha buyuk gauss gurultusu
 # _reinforce'ta tamamen rastgele genom enjeksiyon orani (cesitlilik vs kararlilik)
-REINFORCE_RANDOM_FRAC = 0.02    # fine-tune: cok az rastgele giris, elit yapiyi koru
+REINFORCE_RANDOM_FRAC = 0.12     # kesif: daha fazla rastgele giris -> cesitlilik
 # _on_delivery'de HOF uyesiyle crossover olasiligi (yavru cesitliligi)
-DELIVERY_CROSSOVER_FRAC = 0.10  # fine-tune: az caprazlama, cogunlukla klon+mutasyon
+DELIVERY_CROSSOVER_FRAC = 0.35   # kesif: daha fazla caprazlama -> cesitlilik
 
 # Fitness takviyesi: populasyon dususte rastgele yerine TUM ZAMANLARIN EN IYI
 # karincalarindan (hall of fame) ureme yapilir. Olen karincalarin yerine
@@ -248,6 +253,12 @@ FITNESS_DELIVER_DIST_W = 0.06  # teslim mesafesi odulu: uzaktan getirmek cok dah
 FITNESS_FIND_BASE = 0.0        # sabit taban kaldirildi (yakin besin ~0 puan)
 FITNESS_FIND_DIST_W = 0.06     # piksel basina odul (yuvadan uzaklik) (artirildi)
 
+# YOL VERIMLILIGI odulu: teslimat aninda duz_mesafe/kat_edilen_mesafe orani
+# (1.0=mukemmel duz yol) ile ekstra bonus. Mevcut teslimat odulune EK olarak
+# verilir (onu degistirmez) -> kisa/dogrudan yol bulan karincalar fazladan
+# odullenir, dolambacli yol alanlar daha az bonus alir.
+PATH_EFFICIENCY_W = 3.0        # teslimat basina, verimlilik oraniyla olcekli bonus
+
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
 # YUVAYA BAKMA odulu: tasirken homing acisi (nrel) dustukce (yuva one yakin)
@@ -262,11 +273,13 @@ FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..
 # secilim baskisi. Iz yoksa (basta) odul 0; basarili karincalar iz biraktikca
 # digerleri izi takip etmeyi ogrenir (gercek karinca pozitif geri beslemesi).
 TRAIL_FOLLOW_W = 9.0           # food-feromon gradyani yonunde hareket odulu
-# GORUNEN besine ODAKLANMA odulu (YENI): bos gezerken gorus alaninda besin
-# varsa, ona olan mesafeyi kisalttikca odul. Koku tirmanma genel yon verir
-# ama besinin TAM USTUNE gitmeyi garanti etmez -> karinca yanindan gecebilir.
-# Bu odul gorulen besine doğrudan odaklanmayi/yaklasmayi tesvik eder.
-FOOD_APPROACH_REWARD_W = 0.05  # piksel basina odul (ratchet, sadece yeni min mesafe)
+# GORUNEN besine YONELME odulu: bos gezerken gorus alaninda besin varsa,
+# ona dogru ACISAL HIZALANARAK hareket etmek odullenir (FACE_NEST_REWARD_W
+# ile ayni desen). Saf mesafe-azalma yeterli degildi -> dolanarak da mesafe
+# zaman zaman azalabiliyordu, bu da "besin etrafinda dolanma" davranisina
+# yol aciyordu. KAT EDILEN MESAFEYLE (disp) CARPILIR -> sabit durup besine
+# bakarak farm edilemez.
+FOOD_FACE_REWARD_W = 0.05      # piksel basina odul (hizalanma * disp)
 
 # ---------------------------------------------------------------------------
 # Kayit (recording)

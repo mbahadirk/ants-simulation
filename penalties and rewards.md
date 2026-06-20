@@ -95,8 +95,27 @@ baskısını oluşturan **tek kaynak**tır (`Ant.fitness()` sadece
   - Sonuç: yuva yanında topla-getir turu çok az puan verir; uzun mesafe
     forage'lar belirgin şekilde daha değerli olur → gerçek forager'lar Hall
     of Fame'e girer.
+
+### Yol verimliliği bonusu — **YENİ**
+- **Tetik:** Teslimat anında, taşıma boyunca kat edilen gerçek mesafe
+  (`self.carry_distance` — her adımda `disp` ile biriktirilir) düz hat
+  mesafesiyle (`last_find_dist`) karşılaştırılır.
+- **Ödül formülü:**
+  ```
+  efficiency = min(1.0, last_find_dist / max(carry_distance, 1.0))
+  fitness_bonus += efficiency * PATH_EFFICIENCY_W
+  ```
+  - `PATH_EFFICIENCY_W = 3.0` — teslimat başına, verimlilik oranıyla ölçekli
+    bonus (1.0 = mükemmel düz yol, daha dolambaçlı yollar daha az bonus alır).
+  - **Mevcut teslimat ödülünü DEĞİŞTİRMEZ, ona EKTİR** — sadece kısa/dogrudan
+    yol bulan karıncalara fazladan ödül verir.
+- **Neden eklendi:** Besin bulma ve yuvaya dönme ödülleri zaten vardı ama
+  hiçbiri "ne kadar VERİMLİ" gittiğini ölçmüyordu — uzun dolambaçlı bir yolla
+  da gelen karınca aynı teslimat ödülünü alıyordu. Bu bonus, daha kısa/düz
+  yol bulan genomları doğrudan ödüllendirerek seçilim baskısı oluşturur.
 - **Sıfırlamalar:** `min_home_dist`, `prev_home_dist` → `None`;
   `max_odor_seen`, `max_food_ph_seen` → `0.0` (yeni arayış döngüsü başlar).
+  `carry_distance` bir sonraki besin alımında `0.0`'a sıfırlanır.
 
 ---
 
@@ -184,24 +203,30 @@ Sadece `self.carrying == False` iken çalışır.
     giden karıncalar ödüllenir. Amaç: uzak besin kaynaklarına ulaşmak için
     aktif keşfi teşvik etmek.
 
-### Görülen besine odaklanma ödülü (RATCHET) — **YENİ**
-- **Tetik:** Görüş alanında (180°, `last_seen`) besin görünüyor ve o
-  arayışta görülen besine ulaşılan **en yakın** mesafeden daha yakına
-  gelindi.
+### Görülen besine yönelme ödülü (hareket-bağımlı) — **YENİ (v2)**
+- **Tetik:** Görüş alanında (180°, `last_seen`) besin görünüyor, karınca
+  **gerçekten hareket ediyor** (`disp > 1e-3`) ve hareketi besine doğru
+  **açısal hizalı**.
 - **Ödül formülü:**
   ```
-  nearest = min(dist for (oi, _, _, dist) in last_seen if oi == FOOD)
-  fitness_bonus += (min_food_sight_dist - nearest) * FOOD_APPROACH_REWARD_W
+  fx, fy = en_yakin_gorunen_besinin_konumu
+  frel = wrap_angle(atan2(fy-y, fx-x) - heading)
+  align = max(0.0, cos(frel))         # 1.0 = besin tam onunde
+  fitness_bonus += align * FOOD_FACE_REWARD_W * disp
   ```
-  - `FOOD_APPROACH_REWARD_W = 0.05` (piksel başına).
-  - Ratchet: sadece yeni bir minimum mesafeye ulaşılırsa ödül; aynı yerde
-    durup tekrar tekrar "görmekle" farm edilemez.
+  - `FOOD_FACE_REWARD_W = 0.05` (piksel başına, hizalanmayla ölçekli).
+  - `FACE_NEST_REWARD_W` ile birebir aynı desen: ödül hem hizalanmaya HEM
+    hareket miktarına (`disp`) bağlı — sabit durup besine bakarak farm
+    edilemez.
+- **İlk versiyondan (v1) farkı:** Önceki sürüm sadece "besine olan mesafe
+  azaldı mı" (ratchet) bakıyordu. Bu, dolaşarak da zaman zaman mesafe
+  azaltılabildiği için zayıf bir sinyaldi — karıncalar besini görse de
+  etrafında dolanmayı tercih edip doğrudan üzerine gitmiyordu. v2, "besine
+  DOĞRU yürüyor musun" (yön + hareket) ölçer; yan/geri hareket veya dolanma
+  artık ödül vermez.
 - **Neden eklendi:** Koku tırmanma (`FORAGE_REWARD_W`) genel yön sağlar ama
-  besinin TAM ÜSTÜNE gitmeyi garanti etmez — karınca kokuyu tırmanırken
-  besinin yanından geçip gidebiliyordu. Bu ödül, gözle görülen besine doğrudan
-  odaklanmayı/yaklaşmayı ayrıca ödüllendirir.
-- **Sıfırlama:** Besin alındığında (`min_food_sight_dist = None`) yeni arayış
-  için sıfırlanır.
+  besinin TAM ÜSTÜNE gitmeyi garanti etmez. Bu ödül, gözle görülen besine
+  doğrudan yönelmeyi/yaklaşmayı ayrıca ödüllendirir.
 
 ---
 
@@ -250,13 +275,14 @@ Fitness'tan ayrı; karınca yaşıyor mu, ölüyor mu belirler.
 | Jitter (salınım) | Ceza | Ardışık ters dönüş (sağ↔sol) | `JITTER_FIT_PENALTY=0.04` | Fitness only |
 | Besin bulma | Ödül | Besin alındı | `FITNESS_FIND_DIST_W=0.06` × mesafe | Fitness |
 | Teslimat | Ödül | Yuvaya teslim | `FITNESS_DELIVER_W=4.0` + `0.06`×mesafe | Fitness |
+| Yol verimliliği | Ödül | Teslimde düz/kat-edilen mesafe oranı | `PATH_EFFICIENCY_W=3.0` × oran | Fitness |
 | Yuvaya yaklaşma | Ödül (ratchet) | Taşırken yeni min mesafe | `RETURN_REWARD_W=0.040` | Fitness |
 | Yuvaya bakma | Ödül (hareket-bağımlı) | Taşırken hizalanma × disp | `FACE_NEST_REWARD_W=0.05` | Fitness |
 | Yuvadan uzaklaşma | **Kapalı** | — | `CARRY_AWAY_PENALTY_W=0.0` | — |
 | Koku tırmanma | Ödül (ratchet) | Boşken yeni max koku | `FORAGE_REWARD_W=6.0` | Fitness |
 | İz takip | Ödül (ratchet) | Boşken yeni max feromon | `TRAIL_FOLLOW_W=9.0` | Fitness |
 | Keşif | Ödül (ratchet) | Boşken yeni max uzaklık | `EXPLORE_REWARD_W=0.012` | Fitness |
-| Besine odaklanma | Ödül (ratchet) | Boşken görülen besine yeni min mesafe | `FOOD_APPROACH_REWARD_W=0.05` | Fitness |
+| Besine yönelme | Ödül (hareket-bağımlı) | Boşken görülen besine hizalanma × disp | `FOOD_FACE_REWARD_W=0.05` | Fitness |
 | Açlık | Ölüm koşulu | `STARVE_TIME=40` sn besin yok | — | Enerji |
 | Yaşlanma | Ölüm koşulu | `age >= lifespan` | — | Yaşam süresi |
 
