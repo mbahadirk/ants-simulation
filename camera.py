@@ -50,6 +50,12 @@ class Camera:
         self.y = 0.0
         self.follow = None
 
+    def set_zoom(self, zoom):
+        """Zoom'u dogrudan verilen degere ayarlar (B tusu 4x takip icin)."""
+        self.zoom = zoom
+        if zoom in ZOOM_LEVELS:
+            self.zoom_idx = ZOOM_LEVELS.index(zoom)
+
     def pan(self, dx, dy):
         self.follow = None
         self.x += dx / self.zoom

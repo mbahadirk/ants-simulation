@@ -21,11 +21,19 @@ baskısını oluşturan **tek kaynak**tır (`Ant.fitness()` sadece
 - **Fitness cezası:** `WALL_FIT_PENALTY = 0.10` (adım başına sabit)
 - **Sayaç:** `self.wall_hits += 1`
 
-### Dış çerçeve (BORDER) — ek ceza
-- **Tetik:** Duvar çarpması SIRASINDA karınca haritanın en dış hücresinde ise
-  (kenara yapışmayı caydırmak için).
-- **Enerji cezası:** `BORDER_PENALTY_RATE = 0.10` /sn (WALL cezasına ek)
-- **Fitness cezası:** `BORDER_FIT_PENALTY = 0.22` (WALL cezasına ek)
+### Dış çerçeve (BORDER) — **düzeltildi**
+- **Tetik:** Karınca en dış hücre şeridinde (`cs + margin`, margin=1.5px)
+  — **kafa kafaya bloke olsun ya da kayarak sürtünsün**, hareketten bağımsız.
+- **Enerji cezası:** `BORDER_PENALTY_RATE = 0.10` /sn
+- **Fitness cezası:** `BORDER_FIT_PENALTY = 0.22`
+- **Hata düzeltmesi:** Önceden bu ceza yalnızca `not moved` (kafa kafaya bloke)
+  iken kontrol ediliyordu. Dış duvara **kayarak sürtünen** karınca, o eksende
+  `moved=True` aldığı için cezadan kaçıyordu → duvarı serbest navigasyon rayı
+  gibi kullanıyordu. Artık `moved`'dan bağımsız + `margin` ile yüzey tespiti →
+  sürtünenler de cezalanır.
+- **Yuva muafiyeti:** Yuva köşede olabileceğinden, yuvanın
+  `BORDER_HUG_NEST_EXEMPT_CELLS = 6` hücre çevresi cezadan muaf (köşe yaklaşımı
+  cezalanmasın).
 
 ### Sabit durma (IDLE)
 - **Tetik:** `ACTION_NONE` seçildi (bilinçli bekleme).
@@ -52,6 +60,33 @@ baskısını oluşturan **tek kaynak**tır (`Ant.fitness()` sadece
   ceza uygular; tek seferlik düzeltme artık ücretsizdir.
 - **Not:** `FORWARD`/`BACK`/`NONE` aksiyonu görülünce zincir ve sayaç
   sıfırlanır (gerçek bir ilerleme sonrası yön değiştirmek titreme sayılmaz).
+
+### Kokusuz alanda durma (NO-ODOR IDLE) — **YENİ**
+- **Tetik:** Karınca **besin taşımıyor** + bulunduğu yerde **hiç koku yok**
+  (`last_odor < ODOR_DEAD_THRESH = 0.02`) + **ilerlemiyor** (`disp < 0.5`,
+  yani yerinde duruyor/dönüyor).
+- **Fitness cezası:** `NO_ODOR_IDLE_PENALTY = 0.04` (adım başına)
+- **Neden eklendi:** Yakındaki besin tükenip koku kaybolduğunda, karıncaların
+  o ölü bölgede oyalanmak yerine **uzak alanlara açılıp yeni besin araması**
+  isteniyor. Kokusuz bir noktada hareketsiz durmak küçük bir maliyet getirir →
+  oradan ayrılma/keşif baskısı oluşur.
+- **Önemli:** Yalnızca **duran** karınca cezalanır (`disp < 0.5`). Aktif
+  hareket eden kâşif (ölü bölgeden geçerek uzağa giden) **cezasızdır** — bu
+  ceza uzağa gitmeyi caydırmaz, tam tersine ölü bölgede çakılı kalmayı caydırır.
+  Taşıyan karınca hiç etkilenmez (zaten koku girdisi taşırken sıfırlanır).
+
+### Duvar sürünme (BORDER-HUG) — **YENİ**
+- **Tetik:** Karınca dış çerçeve **şeridinde** (`BORDER_HUG_CELLS = 2` hücre =
+  40px) **ve** yuvaya `BORDER_HUG_NEST_EXEMPT_CELLS = 6` hücreden uzaktayken.
+- **Fitness cezası:** `BORDER_HUG_PENALTY = 0.06` (adım başına)
+- **Neden eklendi:** Yuva köşede olduğunda karıncalar homing kullanmak yerine
+  dış duvara **sürünerek** köşeye ulaşıyordu (duvarı navigasyon rayı gibi
+  kullanma). Bu, doğal/kısa iç (diyagonal) yolu öğrenmelerini engelliyordu.
+  Şerit içinde olmak küçük bir maliyet getirince diyagonal homing yolu daha
+  ucuz hale gelir.
+- **Yuva muafiyeti:** Yuva köşede olduğu için ona yaklaşırken duvara yakın olmak
+  zorunludur — bu yüzden yuvanın `6` hücre çevresi cezadan **muaf**. Hem boş
+  hem taşıyan karıncaya uygulanır (duvar rayı her iki yönde de caydırılır).
 
 ---
 
@@ -154,12 +189,18 @@ Sadece `self.carrying == True` iken çalışır.
   align = max(0.0, cos(nrel))           # 1.0 = yuva tam onunde, 0 = yan/arka
   fitness_bonus += align * FACE_NEST_REWARD_W * disp
   ```
-  - `FACE_NEST_REWARD_W = 0.05` (piksel başına, hizalanmayla ölçekli).
-  - `disp` çarpanı kritik: **sabit durup sadece yuvaya bakarak ödül
-    farmlanamaz** — ödül ancak kat edilen mesafeyle birlikte gelir. Aynı
-    mantık feromon bırakma ve diğer hareket-bağımlı ödüllerde de kullanılıyor.
+  - `FACE_NEST_REWARD_W = 0.005` (piksel başına, hizalanmayla ölçekli)
+    — **0.05'ten 10× düşürüldü** (aşağıdaki uyarıya bakın).
+  - `disp` çarpanı: sabit durup sadece yuvaya bakarak ödül farmlanamaz —
+    ödül ancak kat edilen mesafeyle birlikte gelir.
   - `align` negatife düşmez (`max(0, cos(nrel))`) — yuvaya sırtını dönmüş
     hareket ekstra ceza almaz, sadece bu ödülden pay alamaz.
+  - ⚠️ **Sınırsız birikim uyarısı:** Bu ödülde ratchet/cap **yok** — karınca
+    hareket ettiği her adımda birikir. `0.05`'te uzun ömürlü (≈720 sn) bir
+    karınca yuvaya bakarak "dans ederek" binlerce fitness toplayıp teslimat
+    ödülünü (≈80) gölgeliyordu → seçilim baskısı yok oluyordu. Bu yüzden 10×
+    düşürüldü; gerçek yön sinyali ratchet ödüllerden (`RETURN_REWARD_W`,
+    `EXPLORE_REWARD_W`) gelir.
 - **Neden eklendi:** `RETURN_REWARD_W` sadece mesafenin azalmasını ödüllendiriyordu;
   bu ödül ayrıca **doğru yöne bakma/yönelme** davranışını doğrudan teşvik
   ediyor — homing açısının küçük tutulması (yuvaya dönük gitme) öğrenilir.
@@ -214,7 +255,9 @@ Sadece `self.carrying == False` iken çalışır.
   align = max(0.0, cos(frel))         # 1.0 = besin tam onunde
   fitness_bonus += align * FOOD_FACE_REWARD_W * disp
   ```
-  - `FOOD_FACE_REWARD_W = 0.05` (piksel başına, hizalanmayla ölçekli).
+  - `FOOD_FACE_REWARD_W = 0.005` (piksel başına, hizalanmayla ölçekli)
+    — **0.05'ten 10× düşürüldü** (`FACE_NEST_REWARD_W` ile aynı sınırsız-birikim
+    sorunu: besin etrafında "dans ederek" fitness farm'lanabiliyordu).
   - `FACE_NEST_REWARD_W` ile birebir aynı desen: ödül hem hizalanmaya HEM
     hareket miktarına (`disp`) bağlı — sabit durup besine bakarak farm
     edilemez.
@@ -272,17 +315,19 @@ Fitness'tan ayrı; karınca yaşıyor mu, ölüyor mu belirler.
 | Wall hit | Ceza | Duvara çarpma | `WALL_PENALTY_RATE=0.08`/sn, `WALL_FIT_PENALTY=0.10` | Enerji + Fitness |
 | Border hit | Ceza (ek) | Dış çerçevede çarpma | `BORDER_PENALTY_RATE=0.10`/sn, `BORDER_FIT_PENALTY=0.22` | Enerji + Fitness |
 | Idle | Ceza | Bekleme aksiyonu | `IDLE_PENALTY_RATE=0.0`, `IDLE_FIT_PENALTY=0.06` | Fitness only |
-| Jitter (salınım) | Ceza | Ardışık ters dönüş (sağ↔sol) | `JITTER_FIT_PENALTY=0.04` | Fitness only |
+| Jitter (salınım) | Ceza | Ardışık ters dönüş (sağ↔sol) | `JITTER_FIT_PENALTY=0.025` | Fitness only |
+| Kokusuz idle | Ceza | Boşken kokusuz alanda durmak (disp<0.5) | `NO_ODOR_IDLE_PENALTY=0.04` | Fitness only |
+| Duvar sürünme | Ceza | Dış çerçeve şeridinde (yuva uzağı) | `BORDER_HUG_PENALTY=0.06` | Fitness only |
 | Besin bulma | Ödül | Besin alındı | `FITNESS_FIND_DIST_W=0.06` × mesafe | Fitness |
 | Teslimat | Ödül | Yuvaya teslim | `FITNESS_DELIVER_W=4.0` + `0.06`×mesafe | Fitness |
 | Yol verimliliği | Ödül | Teslimde düz/kat-edilen mesafe oranı | `PATH_EFFICIENCY_W=3.0` × oran | Fitness |
 | Yuvaya yaklaşma | Ödül (ratchet) | Taşırken yeni min mesafe | `RETURN_REWARD_W=0.040` | Fitness |
-| Yuvaya bakma | Ödül (hareket-bağımlı) | Taşırken hizalanma × disp | `FACE_NEST_REWARD_W=0.05` | Fitness |
+| Yuvaya bakma | Ödül (hareket-bağımlı) | Taşırken hizalanma × disp | `FACE_NEST_REWARD_W=0.005` | Fitness |
 | Yuvadan uzaklaşma | **Kapalı** | — | `CARRY_AWAY_PENALTY_W=0.0` | — |
 | Koku tırmanma | Ödül (ratchet) | Boşken yeni max koku | `FORAGE_REWARD_W=6.0` | Fitness |
 | İz takip | Ödül (ratchet) | Boşken yeni max feromon | `TRAIL_FOLLOW_W=9.0` | Fitness |
 | Keşif | Ödül (ratchet) | Boşken yeni max uzaklık | `EXPLORE_REWARD_W=0.012` | Fitness |
-| Besine yönelme | Ödül (hareket-bağımlı) | Boşken görülen besine hizalanma × disp | `FOOD_FACE_REWARD_W=0.05` | Fitness |
+| Besine yönelme | Ödül (hareket-bağımlı) | Boşken görülen besine hizalanma × disp | `FOOD_FACE_REWARD_W=0.005` | Fitness |
 | Açlık | Ölüm koşulu | `STARVE_TIME=40` sn besin yok | — | Enerji |
 | Yaşlanma | Ölüm koşulu | `age >= lifespan` | — | Yaşam süresi |
 

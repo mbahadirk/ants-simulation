@@ -154,9 +154,9 @@ def run_menu(screen):
                         return action
 
         screen.fill((20, 18, 16))
-        title = font_big.render("ANT  NEUROEVOLUTION", True, (235, 200, 110))
+        title = font_big.render("ANT NEUROEVOLUTION", True, (235, 200, 110))
         screen.blit(title, title.get_rect(center=(cx, 150)))
-        sub = font.render("Dense + LSTM + Genetic Algorithm  /  pygame", True, (170, 170, 170))
+        sub = font.render("spiral experiment pygame", True, (170, 170, 170))
         screen.blit(sub, sub.get_rect(center=(cx, 205)))
 
         for r, action, label in rects:
@@ -357,6 +357,7 @@ def run_simulation(screen, resume_path=None, map_path=None):
     sim.auto_spawn = True
     sim.auto_food  = True
     settings = SettingsPanel()
+    follow_best = False   # B tusu: active best ajani 4x zoom ile takip et
 
     while True:
         dt = clock.tick(C.FPS) / 1000.0
@@ -431,6 +432,19 @@ def run_simulation(screen, resume_path=None, map_path=None):
                     state = "ON" if sim.auto_food else "OFF"
                     flash_text = f"Auto food: {state}"
                     flash_timer = 2.0
+                elif event.key == pygame.K_b:          # active best ajani 4x takip toggle
+                    follow_best = not follow_best
+                    if follow_best:
+                        best = sim.active_best_ant()
+                        camera.follow = best
+                        sim.selected = best       # debug panelini ac (uyum gosterir)
+                        camera.set_zoom(1.6)
+                        flash_text = "Follow active best: ON"
+                    else:
+                        camera.reset()            # ikinci basis -> kamerayi resetle
+                        sim.selected = None       # paneli kapat
+                        flash_text = "Follow active best: OFF"
+                    flash_timer = 2.0
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:  # orta tik
                 wx, wy = camera.screen_to_world(*event.pos)
                 col = int(wx // C.CELL_SIZE)
@@ -484,11 +498,22 @@ def run_simulation(screen, resume_path=None, map_path=None):
                 steps += 1
             if steps >= C.MAX_SUBSTEPS:
                 accumulator = 0.0  # cok yavas donanimda spiral'i kes
+
+        # active best takip: her karede en iyiyi bul; degistiyse kamera VE debug
+        # paneli otomatik yeni en iyiye gecer, zoom sabit kalir
+        if follow_best:
+            best = sim.active_best_ant()
+            if best is not None:
+                if best is not camera.follow:
+                    camera.follow = best
+                sim.selected = best       # debug paneli takip edilene uyum gostersin
+                camera.set_zoom(1.6)
         camera.update()
 
         renderer.draw_world(screen, sim.world, camera, debug=debug)
         renderer.draw_ants(screen, sim, camera, debug=debug)
-        renderer.draw_hud(screen, sim, camera, debug, recorder, paused=paused, speed=speed)
+        renderer.draw_hud(screen, sim, camera, debug, recorder, paused=paused, speed=speed,
+                          follow_best=follow_best)
         settings.draw(screen, sim, speed)
 
         # gecici bildirim (kayit/devam)

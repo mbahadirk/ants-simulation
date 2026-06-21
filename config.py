@@ -87,9 +87,23 @@ IDLE_FIT_PENALTY = 0.06        # adim basina sabit durma fitness cezasi
 # Sag-sol salinim (titreme) cezasi: TEK ters donus normal duzeltme sayilir
 # (cezasiz); sadece ARDISIK 2+ ters donus (gercek titreme) cezalandirilir.
 JITTER_FIT_PENALTY = 0.025     # adim basina titreme cezasi (0.04'ten dusuruldu)
+# KOKUSUZ ALANDA DURMA cezasi: besin TASIMAYAN karinca, hic koku olmayan
+# (last_odor < esik) bir yerde ILERLEMEDEN durursa (disp ~0) ufak ceza alir.
+# Amac: yakinda besin bitip koku kaybolunca karincalar oradan AYRILIP uzak
+# alanlara acilsin (kokusuz olu bolgede loiter etmek caydirilir). Hareket
+# eden kasif cezasiz -> sadece DURAN cezalanir.
+NO_ODOR_IDLE_PENALTY = 0.04    # adim basina, kokusuz alanda durunca fitness cezasi
+ODOR_DEAD_THRESH = 0.02        # bu degerin altindaki yerel koku "kokusuz" sayilir
 # En dis cerceveye (harita kenari) carpma EK cezasi (kenara sikismayi onler)
 BORDER_FIT_PENALTY = 0.22      # adim basina ek fitness cezasi (sadece dis cerceve)
 BORDER_PENALTY_RATE = 0.10     # saniyelik ek enerji cezasi (0.35'ten dusuruldu)
+# DUVAR SURUNME cezasi: karincalar (ozellikle yuva kosedeyse) dis duvara
+# surunerek yol buluyor, homing kullanmiyor. Dis cerceve seridindeyken
+# (band) ufak ceza -> dogal/kisa (ic) yollar tercih edilsin. YUVA cevresi
+# MUAF (yuva kosede ise yaklasirken duvara yakin olmak normal).
+BORDER_HUG_CELLS = 2            # dis cerceveye bu kadar hucre yakinlik "serit"
+BORDER_HUG_PENALTY = 0.06      # adim basina seritte olma cezasi
+BORDER_HUG_NEST_EXEMPT_CELLS = 6  # yuvaya bu kadar yakin -> ceza yok (kose yaklasimi)
 # Besin TASIRKEN yuvadan UZAKLASMA cezasi (piksel basina) -> yemi alip donmeyenler elenir
 # KAPATILDI: tasi yan karincalarin tas/engel etrafindan dolanmasi gerektiginde
 # (gecici olarak yuvadan uzaklasmak sart) titreyip kilitlenmelerine sebep oluyordu.
@@ -102,9 +116,10 @@ CARRY_AWAY_PENALTY_W = 0.0
 # Her dilimde o yondeki EN YAKIN nesne gorunur; arkasindaki nesneler bu yakin
 # nesne tarafindan GIZLENIR (okluzyon). Boylece bir tasin arkasindaki besin
 # gorunmez, ama 180 derece icindeki tum (farkli yonlerdeki) nesneler gorunur.
-VISION_RANGE = 13.0             # gorus yaricapi (piksel) ~0.65 hucre - karincalar
-                                 # gercekte kor, "gorus" anten menzili kadar kisa
-                                 # (130'dan 1/10'a dusuruldu)
+VISION_RANGE = 30.0             # gorus yaricapi (piksel) ~1.5 hucre - karincalar
+                                 # kor sayilir ama tasi vaktinde fark edip
+                                 # etrafindan dolanabilmeli (13'ten artirildi;
+                                 # cok kisa menzil tasi gec gorup titremeye yol aciyordu)
 VISION_FOV = 3.141592653589793  # 180 derece (on yari daire)
 N_SECTORS = 8                   # gorus acisini kac dilime bolelim (12'den dusuruldu)
 N_VIS_OBJ = 2                   # one-hot tipler: besin, engelli(tas+engel)
@@ -147,7 +162,7 @@ INPUT_SIZE = (VISION_INPUTS + HOMING_INPUTS
 # kullanilan yollar zamanla guclensin. Besin TASIYAN karinca 10x daha fazla birakir.
 PH_DEPOSIT_BASE = 0.08      # bos gezen karincanin KAT EDILEN PIKSEL basina birakimi.
                             # Hareketle orantili -> sabit/donerken/titrerken birakmaz.
-PH_CARRY_MULT = 15.0        # besin TASIYAN karinca bu kat daha fazla birakir
+PH_CARRY_MULT = 10.0        # besin TASIYAN karinca bu kat daha fazla birakir
 PH_EVAPORATION = 0.02     # saniyelik buharlasma (0.0003'ten 5x hizlandirildi)
 PH_MAX = 200.0              # feromon tavani (normalize + birikim siniri)
 # Goruntu: bu yogunlugun ustu "guclu iz" sayilir (parlak/mor cizilir)
@@ -163,9 +178,11 @@ PH_STRONG_THRESH = 140.0
 # Menzil 25 -> harita capinda neredeyse global koku -> gradyan duzlesir, yon yok.
 # 12'ye dusuruldu: koku YEREL ve YONLU olur; karinca yokus-yukari gercekten
 # ilerlemek zorunda kalir (yuva yaninda otomatik max koku farm'lanamaz).
-ODOR_RANGE_CELLS = 32       # koku menzili (hucre): 32 hucre x 20px = 640px yaricap
-                            # (22'den artirildi: karincalar kor, koku duyusu daha
-                            # baskin/uzak menzilli olmali)
+ODOR_RANGE_CELLS = 48       # koku menzili (hucre): 48 hucre x 20px = 960px yaricap
+                            # (32'den artirildi: uzak besine ulasmak icin ilk yolu
+                            # acmak -> koku daha genis yayilsin, karincalar tirmanarak
+                            # menzil-disi alanlara da yonelebilsin. Karisma riskine
+                            # ragmen "uzaga acilma" oncelikli.)
 ODOR_SAMPLE_DIST = 2.0 * CELL_SIZE  # (eski uyumluluk; artik gradyan kullaniliyor)
 
 # ---------------------------------------------------------------------------
@@ -221,10 +238,16 @@ ACTION_NAMES = {
 # ---------------------------------------------------------------------------
 INITIAL_POP = 40                # baslangic karinca sayisi
 MIN_POP = 15                    # bu sayinin altina dusulurse takviye (15'ten artirildi)
-MAX_POP = 80                    # ust sinir
+MAX_POP = 80                    # YUMUSAK ust sinir: normal teslimler bunun ustunde dogurmaz
+HARD_MAX_POP = 100              # KATI ust sinir: elit teslimler buraya kadar zorla dogurabilir;
+                                # bu sayiya ulasilirsa en ESKI nesilden karincalar oldurulur
 # Ureme: yuvaya besin getiren HER karincadan, o karincanin genomundan
-# (mutasyonla) OFFSPRING_PER_DELIVERY adet yavru dogar.
-OFFSPRING_PER_DELIVERY = 3      # her teslim eden karincadan kac yavru
+# (mutasyonla) yavru dogar. NORMAL karinca 1 yavru; o anki EN IYI (yasayan
+# en yuksek fitness) karinca teslim ederse ELITE_OFFSPRING kadar yavru dogar
+# ve YUMUSAK limit (MAX_POP) dolu olsa bile zorla dogurulur (en iyi genom
+# ureyemeden kaybolmasin diye).
+OFFSPRING_PER_DELIVERY = 1      # normal teslim eden karincadan kac yavru
+ELITE_OFFSPRING = 2             # yasayan en iyi karinca teslim ederse kac yavru (limit asar)
 N_PARENTS = 2                   # (onur listesi takviyesinde) kac ebeveyn birlestirilir
 # KESIFCI moda geri donuldu: reward fonksiyonu cok degisti, populasyon eski
 # (dusuk cesitlilik) ayarlarla erken yakinsamis ve fitness duz cizgi olmustu.
@@ -245,7 +268,7 @@ HOF_OFFER_EVERY = 0.5          # yasayan en iyi karinca bu sikligla onur listesi
 # fitness = teslim*(DELIVER_W + mesafe) + (mesafeye gore bulma) + odul_sekil.
 # Teslim odulu de mesafeye gore olceklenir: yuva yaninda topla-getir (kisa tur)
 # uzun-mesafe forage ile AYNI puani vermesin -> gercek forager'lar HOF'a girer.
-FITNESS_DELIVER_W = 4.0        # teslim basina sabit odul (azaltildi; agirlik mesafeye kaydi)
+FITNESS_DELIVER_W = 20.0        # teslim basina sabit odul (azaltildi; agirlik mesafeye kaydi)
 FITNESS_DELIVER_DIST_W = 0.06  # teslim mesafesi odulu: uzaktan getirmek cok daha degerli (2x artirildi)
 # Besin bulma odulu YUVADAN UZAKLIGA gore olceklenir. Sabit taban KALDIRILDI
 # (1.0 -> 0): yuvaya cok yakin besin bulmak neredeyse 0 puan -> nest-circling
@@ -262,9 +285,12 @@ PATH_EFFICIENCY_W = 3.0        # teslimat basina, verimlilik oraniyla olcekli bo
 # Odul sekillendirme (reward shaping) - SEYREK ODUL TUZAGINI kirar:
 RETURN_REWARD_W = 0.040        # besin tasirken yuvaya yaklasma odulu (piksel basina)
 # YUVAYA BAKMA odulu: tasirken homing acisi (nrel) dustukce (yuva one yakin)
-# odul artar. KAT EDILEN MESAFEYLE (disp) CARPILIR -> sabit durup sadece
-# yuvaya bakarak farm edilemez; odul ancak gercek hareketle birlikte gelir.
-FACE_NEST_REWARD_W = 0.05      # piksel basina odul (hizalanma * disp)
+# odul artar. KAT EDILEN MESAFEYLE (disp) CARPILIR.
+# DIKKAT: bu odul her hareket adiminda SINIRSIZ birikir (ratchet/cap yok).
+# 0.05'te uzun omurlu bir karinca yuvaya/besine bakarak "dans ederek" binlerce
+# fitness toplayip teslimat odulunu (~80) golgeliyordu -> secilim baskisi
+# yok oluyordu. 10x DUSURULDU (sadece hafif yon durtusu, farming baskin degil).
+FACE_NEST_REWARD_W = 0.005     # piksel basina odul (hizalanma * disp) (0.05'ten 10x dusuruldu)
 EXPLORE_REWARD_W = 0.012       # bos gezerken yuvadan UZAKLASTIKCA odul (piksel basina ratchet)
 # Koku takibini OGRETEN odul: bos gezerken besin kokusunu tirmandikca puan.
 FORAGE_REWARD_W = 6.0          # bos gezerken besin kokusunu tirmanma odulu (0..1 artis)
@@ -279,7 +305,10 @@ TRAIL_FOLLOW_W = 9.0           # food-feromon gradyani yonunde hareket odulu
 # zaman zaman azalabiliyordu, bu da "besin etrafinda dolanma" davranisina
 # yol aciyordu. KAT EDILEN MESAFEYLE (disp) CARPILIR -> sabit durup besine
 # bakarak farm edilemez.
-FOOD_FACE_REWARD_W = 0.05      # piksel basina odul (hizalanma * disp)
+# DIKKAT: FACE_NEST_REWARD_W ile ayni sinirsiz-birikim sorunu var (ratchet/cap
+# yok). 0.05'te "besin etrafinda dans ederek" fitness farm'lanabiliyordu ->
+# 10x DUSURULDU. Asil yon sinyali ratchet odullerden (FORAGE, EXPLORE) gelir.
+FOOD_FACE_REWARD_W = 0.005     # piksel basina odul (hizalanma * disp) (0.05'ten 10x dusuruldu)
 
 # ---------------------------------------------------------------------------
 # Kayit (recording)

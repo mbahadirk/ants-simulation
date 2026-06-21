@@ -146,6 +146,10 @@ class Renderer:
             if sim.selected is ant:
                 pygame.draw.circle(surf, (255, 255, 120), (int(sx), int(sy)),
                                    int(size * 0.9), 2)
+            # takip edilen (active best / click-follow) -> yesil halka
+            if camera.follow is ant:
+                pygame.draw.circle(surf, (90, 240, 140), (int(sx), int(sy)),
+                                   int(size * 1.15), 2)
 
     def _draw_vision(self, surf, ant, camera):
         sx, sy = camera.world_to_screen(ant.x, ant.y)
@@ -193,13 +197,15 @@ class Renderer:
             pygame.draw.line(surf, color, (int(ex), int(ey)), (int(bx), int(by)), 2)
 
     # ----------------------------------------------------------------- HUD
-    def draw_hud(self, surf, sim, camera, debug, recorder, paused=False, speed=1.0):
+    def draw_hud(self, surf, sim, camera, debug, recorder, paused=False, speed=1.0,
+                 follow_best=False):
         st = sim.stats()
         lines = [
             f"Ants: {st['pop']}   Carrying: {st['carrying']}",
             f"Delivered: {st['delivered']}   Births: {st['births']}   Deaths: {st['deaths']}",
             f"Generation: {st['generation']}   Food: {st['food_left']}   Time: {int(st['time'])}s",
-            f"Hall of fame: {st['hof_size']}   Best fitness: {st['hof_best']:.1f}",
+            f"Hall of fame: {st['hof_size']}   Best: {st['hof_best']:.1f}   "
+            f"Active best: {st.get('active_best', 0.0):.1f}",
             f"Zoom: x{camera.zoom:.1f}   Speed: x{speed:g}   Lifespan: {int(C.LIFESPAN_MIN)}-{int(C.LIFESPAN_MAX)}s",
         ]
         bank = getattr(sim, "bank", None)
@@ -234,23 +240,24 @@ class Renderer:
         if paused:
             self._text(surf, "PAUSED (space)", C.SCREEN_W // 2 - 90, 10, (255, 220, 120))
 
-        # selected ant panel
-        if debug and sim.selected is not None:
+        # selected ant panel (debug modunda VEYA active-best takibinde acilir)
+        if (debug or follow_best) and sim.selected is not None:
             self._draw_ant_panel(surf, sim.selected)
 
         # help
-        help_txt = ("D:debug  Z:zoom  O/P:speed  K/L:lifespan  T:stats  H:save-demo  "
-                    "M:next-map  S:record  F:spawn-toggle  G:food-toggle  MidClick:food  "
-                    "Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
+        help_txt = ("D:debug  Z:zoom  B:follow-best  O/P:speed  K/L:lifespan  T:stats  "
+                    "H:save-demo  M:next-map  S:record  F:spawn-toggle  G:food-toggle  "
+                    "MidClick:food  Space:pause  Arrows:pan  Click:select  R:reset  ESC:menu")
         self._text(surf, help_txt, 10, C.SCREEN_H - 22, (150, 150, 150))
 
     def _draw_ant_panel(self, surf, ant):
-        x0, y0, w, h = C.SCREEN_W - 240, 60, 230, 224
+        x0, y0, w, h = C.SCREEN_W - 240, 60, 230, 246
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
         panel.fill((20, 20, 30, 210))
         surf.blit(panel, (x0, y0))
         info = [
             (f"ID: {ant.id}  Gen: {ant.generation}", (220, 220, 230)),
+            (f"Fitness: {ant.fitness():.1f}", (255, 230, 130)),
             (f"Age: {ant.age:.1f}/{ant.lifespan:.0f}s", (220, 220, 230)),
             (f"Energy: {max(0,ant.energy):.2f}", (220, 220, 230)),
             (f"Carrying: {'yes' if ant.carrying else 'no'}", (220, 220, 230)),
@@ -298,7 +305,7 @@ class SettingsPanel:
 
     BTN = 36          # gear buton kenari
     PW  = 290         # panel genisligi
-    PH  = 386         # panel yuksekligi (3 toggle + 3 slider + tool picker)
+    PH  = 438         # panel yuksekligi (3 toggle + 4 slider + tool picker)
     PAD = 12
 
     # (slider_id, etiket, birim, min, max, log_scale)
@@ -306,6 +313,7 @@ class SettingsPanel:
         ("speed",      "Speed",      "x",  C.SIM_SPEED_MIN, C.SIM_SPEED_MAX, True),
         ("food_val",   "Food Value", " ",  1,               500,             False),
         ("food_rate",  "Spawn Rate", "s",  5,               300,             False),
+        ("food_dist",  "Min Dist",   "c",  0,               60,              False),
     ]
 
     # (tile_id, etiket, renk)
@@ -436,6 +444,8 @@ class SettingsPanel:
             C.FOOD_SPAWN_AMOUNT = max(int(lo), min(int(hi), round(val)))
         elif sid == "food_rate":
             C.FOOD_SPAWN_INTERVAL = max(lo, min(hi, val))
+        elif sid == "food_dist":
+            C.FOOD_SPAWN_MIN_NEST_CELLS = max(int(lo), min(int(hi), round(val)))
         return speed
 
     # ---------------------------------------------------------------- toggle / tool yardimcilari
@@ -504,7 +514,8 @@ class SettingsPanel:
                          (pr.x + pr.w - self.PAD, sep_y))
 
         # --- slider satirlari ---
-        vals = [speed, float(C.FOOD_SPAWN_AMOUNT), float(C.FOOD_SPAWN_INTERVAL)]
+        vals = [speed, float(C.FOOD_SPAWN_AMOUNT), float(C.FOOD_SPAWN_INTERVAL),
+                float(C.FOOD_SPAWN_MIN_NEST_CELLS)]
         for i, ((sid, lbl, unit, lo, hi, log), val) in enumerate(
                 zip(self._SLIDERS, vals)):
             row_y = pr.y + self.PAD + 132 + i * 52
@@ -516,6 +527,8 @@ class SettingsPanel:
                 vtxt = f"x{val:.2g}"
             elif sid == "food_rate":
                 vtxt = f"{val:.0f}s"
+            elif sid == "food_dist":
+                vtxt = f"{int(val)}c"
             else:
                 vtxt = str(int(val))
             surf.blit(fn.render(vtxt, True, (240, 240, 160)),

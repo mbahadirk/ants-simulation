@@ -241,15 +241,23 @@ class Ant:
         had_food = self.carrying  # bu adimin BASINDA tasiyor muydu (pickup/teslim henuz islenmedi)
 
         # --- cezalar (enerji + fitness) ---
-        # duvara/tasa carpip ilerleyemediyse ceza
+        # duvara/tasa kafa kafaya carpip ilerleyemediyse ceza
         if action in (C.ACTION_FORWARD, C.ACTION_BACK) and not moved:
             self.energy -= C.WALL_PENALTY_RATE * dt
             self.fitness_bonus -= C.WALL_FIT_PENALTY
             self.wall_hits += 1
-            # en dis cerceveye (harita kenari) carptiysa EK ceza
-            cs = C.CELL_SIZE
-            if (self.x < cs or self.x > C.WORLD_W - cs
-                    or self.y < cs or self.y > C.WORLD_H - cs):
+
+        # DIS CERCEVE cezasi (HATA DUZELTMESI): onceden sadece 'not moved' iken
+        # bakiliyordu; dis duvara KAYARAK surtunen karinca o eksende moved=True
+        # aldigi icin border cezasindan KACIYORDU. Artik 'moved'dan bagimsiz ve
+        # margin (tolerans) ile yuzey tespiti yapilir -> surtunenler de cezalanir.
+        # Yuva kosede ise yaklasirken duvara yakin olmak normal -> yuva cevresi muaf.
+        margin = 1.5
+        cs = C.CELL_SIZE
+        if (self.x < cs + margin or self.x > C.WORLD_W - cs - margin
+                or self.y < cs + margin or self.y > C.WORLD_H - cs - margin):
+            nd = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            if nd > C.BORDER_HUG_NEST_EXEMPT_CELLS * C.CELL_SIZE:
                 self.energy -= C.BORDER_PENALTY_RATE * dt
                 self.fitness_bonus -= C.BORDER_FIT_PENALTY
         # 'bekle' (sabit durma) cezasi
@@ -273,6 +281,24 @@ class Ant:
         else:
             self.last_turn_dir = None   # ileri/geri/bekleme -> salinim zinciri kirilir
             self.turn_reversal_count = 0
+
+        # KOKUSUZ ALANDA DURMA cezasi: besin TASIMAYAN karinca, hic koku
+        # olmayan bir yerde ILERLEMEDEN durursa (disp ~0) ufak ceza. Yakinda
+        # besin bitip koku kaybolunca oradan ayrilip uzaga acilmaya tesvik eder.
+        # Hareket eden kasif cezasiz; sadece olu bolgede loiter eden cezalanir.
+        if (not self.carrying and self.last_odor < C.ODOR_DEAD_THRESH
+                and disp < 0.5):
+            self.fitness_bonus -= C.NO_ODOR_IDLE_PENALTY
+
+        # DUVAR SURUNME cezasi: dis cerceve seridindeyken (yuva cevresi haric)
+        # ufak ceza -> karincalar duvara surunerek degil, ic/kisa yollarla
+        # (homing) gitsin. Yuva kosede ise yaklasirken muaf.
+        band = C.BORDER_HUG_CELLS * C.CELL_SIZE
+        if (self.x < band or self.x > C.WORLD_W - band
+                or self.y < band or self.y > C.WORLD_H - band):
+            nd = np.hypot(self.x - world.nest_pos[0], self.y - world.nest_pos[1])
+            if nd > C.BORDER_HUG_NEST_EXEMPT_CELLS * C.CELL_SIZE:
+                self.fitness_bonus -= C.BORDER_HUG_PENALTY
 
         # --- besin alma ---
         if not self.carrying and world.take_food(self.x, self.y):

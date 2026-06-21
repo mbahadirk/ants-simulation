@@ -3,8 +3,11 @@ Simulasyon: populasyon yonetimi + genetik ureme.
 
 - Baslangicta INITIAL_POP karinca yuvada rastgele genomlarla dogar.
 - Her karinca algilar, dusunur, hareket eder (ant.update).
-- Yuvaya besin getiren HER karincadan, kendi genomundan (mutasyonla)
-  OFFSPRING_PER_DELIVERY (3) adet yavru dogar.
+- Yuvaya besin getiren NORMAL karincadan kendi genomundan (mutasyonla)
+  OFFSPRING_PER_DELIVERY (1) yavru dogar (yumusak limit MAX_POP dolu degilse).
+- O anki YASAYAN EN IYI (en yuksek fitness) karinca teslim ederse
+  ELITE_OFFSPRING (2) yavru dogar ve yumusak limiti ASAR; populasyon
+  HARD_MAX_POP'a (100) ulasirsa en eski nesilden karincalar oldurulur.
 - Yas / aclik nedeniyle olen karincalar kaldirilir.
 - Populasyon MIN_POP altina duserse rastgele takviye yapilir (nesil tukenmesin).
 """
@@ -45,6 +48,13 @@ class Simulation:
         self.selected = None  # debug'da secili karinca
         self.food_picked = 0   # kumulatif alinan besin
         self.food_lost   = 0   # tasiyan karinca olunce kaybolan besin
+        # populasyondan ayrilan (olen/elenen) karincalarin omur boyu teslimat
+        # toplami -> kisi basina ortalama teslimat grafigi icin (delta/deaths)
+        self.lifetime_delivered_sum = 0
+        # omur-boyu teslimat HISTOGRAMI (kumulatif): index = teslimat sayisi
+        # (son kova 7+), deger = o kadar teslim eden olu karinca sayisi.
+        # Dagilim grafigi icin -> kac karinca 0/1/2/.../7+ besin getirdi.
+        self.delivery_hist = [0] * 8
 
         # zaman serisi istatistik (T tusu ile gorsellestirilir)
         self.history = []
@@ -61,9 +71,12 @@ class Simulation:
             "deaths":    s["deaths"],
             "delivered": s["delivered"],
             "hof_best":  round(s["hof_best"], 2),
+            "active_best": round(s["active_best"], 2),
             "gen":       s["generation"],
             "picked":    self.food_picked,
             "lost":      self.food_lost,
+            "life_deliv_sum": self.lifetime_delivered_sum,
+            "deliv_hist": list(self.delivery_hist),   # kumulatif dagilim snapshot'i
         })
 
     # ------------------------------------------------------------- baslangic
@@ -157,6 +170,8 @@ class Simulation:
                 survivors.append(a)
             else:
                 self._offer_hall(a)
+                self.lifetime_delivered_sum += a.food_delivered  # omur boyu teslimat
+                self.delivery_hist[min(a.food_delivered, 7)] += 1  # dagilim histogrami
                 if a.carrying:
                     self.food_lost += 1   # tasiyan karinca olunce besin kaybi
         self.ants = survivors
@@ -201,8 +216,11 @@ class Simulation:
 
         if C.FITNESS_REINFORCE and elite:
             if len(elite) >= 2:
+                # CESITLILIK: ebeveynleri sadece ilk 2'den degil, TUM HOF'tan
+                # rastgele (benzersiz) sec -> gen havuzu daralmaz, durgunluk azalir
                 k = min(C.N_PARENTS, len(elite))
-                parents = elite[:k]
+                idx = self.rng.choice(len(elite), size=k, replace=False)
+                parents = [elite[i] for i in idx]
                 genomes = [p[1] for p in parents]
                 gen = max(p[2] for p in parents) + 1
                 child = breed(genomes, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
@@ -220,16 +238,55 @@ class Simulation:
         child_gen = ant.generation + 1
         self.generation = max(self.generation, child_gen)
         elite = self.hall_best()
-        for _ in range(C.OFFSPRING_PER_DELIVERY):
+
+        # Bu karinca o anda YASAYAN populasyonun en iyisi mi? Oyleyse "elit"
+        # sayilir: daha cok yavru verir VE yumusak limit (MAX_POP) dolu olsa
+        # bile zorla dogurur -> en iyi genom ureyemeden kaybolmaz.
+        best_living = max((a.fitness() for a in self.ants), default=0.0)
+        is_elite = ant.fitness() >= best_living
+        n_offspring = C.ELITE_OFFSPRING if is_elite else C.OFFSPRING_PER_DELIVERY
+
+        for _ in range(n_offspring):
             # DELIVERY_CROSSOVER_FRAC ihtimalle HOF'tan biriyle crossover -> cesitlilik
+            # CESITLILIK: partneri sadece ilk 2'den degil, TUM HOF'tan rastgele sec
             if elite and self.rng.random() < C.DELIVERY_CROSSOVER_FRAC:
-                other = elite[self.rng.integers(0, min(len(elite), C.N_PARENTS))][1]
+                other = elite[self.rng.integers(0, len(elite))][1]
                 child = breed([parent_genome, other], self.rng,
                               C.MUTATION_RATE, C.MUTATION_SCALE)
             else:
                 child = mutate(parent_genome, self.rng, C.MUTATION_RATE, C.MUTATION_SCALE)
-            if self._spawn_ant(genome=child, generation=child_gen) is not None:
+            if is_elite:
+                # elit: yumusak limiti asar; HARD_MAX_POP'a ulasilirsa en eski
+                # nesilden karinca cikararak yer acar (her zaman dogurur)
+                self._spawn_ant_forced(genome=child, generation=child_gen)
                 self.births += 1
+            else:
+                if self._spawn_ant(genome=child, generation=child_gen) is not None:
+                    self.births += 1
+
+    def _spawn_ant_forced(self, genome=None, generation=0):
+        """Elit ureme icin: yumusak limiti (MAX_POP) gozardi eder. Populasyon
+        HARD_MAX_POP'a ulastiysa en ESKI nesilden (en dusuk generation, esitse
+        en dusuk fitness) bir karinca oldurulerek yer acilir."""
+        if len(self.ants) >= C.HARD_MAX_POP:
+            victim = min(self.ants, key=lambda a: (a.generation, a.fitness()))
+            self.ants.remove(victim)
+            self.deaths += 1
+            self.lifetime_delivered_sum += victim.food_delivered
+            self.delivery_hist[min(victim.food_delivered, 7)] += 1
+            if self.selected is victim:
+                self.selected = None
+        x, y = self._nest_spawn_pos()
+        ant = Ant(x, y, genome=genome, rng=self.rng, generation=generation)
+        self.ants.append(ant)
+        return ant
+
+    def active_best_ant(self):
+        """O an YASAYAN populasyonun en yuksek fitness'li karincasi (yoksa None).
+        Kamera takibi (B tusu) bunu izler."""
+        if not self.ants:
+            return None
+        return max(self.ants, key=lambda a: a.fitness())
 
     # ------------------------------------------------------------------ debug
     def select_at(self, wx, wy, radius=18.0):
@@ -248,6 +305,9 @@ class Simulation:
     def stats(self):
         carrying = sum(1 for a in self.ants if a.carrying)
         hof_best = max((t[0] for t in self.hall.values()), default=0.0)
+        # YASAYAN en iyi fitness: tum-zamanlar (HOF) plato izlerken, aktif
+        # populasyonun anlik en iyisi gercek ogrenme dinamigini gosterir.
+        active_best = max((a.fitness() for a in self.ants), default=0.0)
         return {
             "pop": len(self.ants),
             "carrying": carrying,
@@ -259,6 +319,7 @@ class Simulation:
             "time": self.sim_time,
             "hof_size": len(self.hall),
             "hof_best": hof_best,
+            "active_best": active_best,
         }
 
     # ------------------------------------------------------------------ kayit
@@ -292,6 +353,8 @@ class Simulation:
             "total_delivered": self.total_delivered,
             "food_picked": self.food_picked,
             "food_lost": self.food_lost,
+            "lifetime_delivered_sum": self.lifetime_delivered_sum,
+            "delivery_hist": list(self.delivery_hist),
             "births": self.births,
             "deaths": self.deaths,
             "generation": self.generation,
@@ -366,6 +429,8 @@ class Simulation:
         sim.total_delivered = state["total_delivered"]
         sim.food_picked = state.get("food_picked", 0)
         sim.food_lost   = state.get("food_lost",   0)
+        sim.lifetime_delivered_sum = state.get("lifetime_delivered_sum", 0)
+        sim.delivery_hist = list(state.get("delivery_hist", [0] * 8))
         sim.births = state["births"]
         sim.deaths = state["deaths"]
         sim.generation = state["generation"]
