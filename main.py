@@ -85,10 +85,15 @@ def load_world(map_path=None):
         try:
             return World.load(path)
         except Exception as e:
-            print(f"[map] yuklenemedi ({e}), varsayilan harita kullaniliyor")
+            # Dosya VAR ama (ornegin boyut uyumsuzlugu nedeniyle) yuklenemedi.
+            # Mevcut dosyayi EZME -> kullanici haritasi (default_map.json) korunur;
+            # bu oturum icin gecici generated harita kullanilir.
+            print(f"[map] yuklenemedi ({e}); dosya KORUNUYOR, gecici harita kullaniliyor")
+            return make_default_world()
+    # Dosya hic yoksa: varsayilani uretip kaydet (editorde duzenlenebilsin)
     w = make_default_world()
     try:
-        w.save(C.MAP_FILE)  # editorde duzenlenebilsin diye varsayilani yaz
+        w.save(C.MAP_FILE)
     except Exception:
         pass
     return w

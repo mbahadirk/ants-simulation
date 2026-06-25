@@ -7,7 +7,9 @@ Bir karinca takip ediliyorsa kamera onu merkezler.
 
 import config as C
 
-ZOOM_LEVELS = [1.0, 1.6, 2.5, 4.0]
+# 0.5 -> buyuyen dunyanin (3200x2000) tamami 1600x1000 ekrana tam sigar (uzaktan
+# bakis). Sonraki seviyeler yakinlastirir. Varsayilan index 0 = 0.5 (tum harita).
+ZOOM_LEVELS = [0.5, 0.75, 1.0, 1.6, 2.5, 4.0]
 
 
 class Camera:

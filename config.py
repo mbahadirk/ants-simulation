@@ -7,11 +7,11 @@ Tum moduller buradan beslenir. Degerleri buradan ayarlayabilirsin.
 # Ekran / dunya
 # ---------------------------------------------------------------------------
 CELL_SIZE = 20                  # bir izgara hucresinin piksel boyutu
-GRID_W = 80                     # yatay hucre sayisi
-GRID_H = 50                     # dikey hucre sayisi
+GRID_W = 160                    # yatay hucre sayisi (80'den 2x -> daha buyuk dunya)
+GRID_H = 100                    # dikey hucre sayisi (50'den 2x)
 
-WORLD_W = GRID_W * CELL_SIZE     # dunya genisligi (piksel) = 1600
-WORLD_H = GRID_H * CELL_SIZE     # dunya yuksekligi (piksel) = 1000
+WORLD_W = GRID_W * CELL_SIZE     # dunya genisligi (piksel) = 3200
+WORLD_H = GRID_H * CELL_SIZE     # dunya yuksekligi (piksel) = 2000
 
 # Pencere/render cozunurlugu (dunya ile birebir -> net goruntu, net kayit).
 # Kucuk ekranda calisiyorsan bu degerleri dusur (dunya da otomatik kuculur).
@@ -236,10 +236,10 @@ ACTION_NAMES = {
 # ---------------------------------------------------------------------------
 # Genetik algoritma
 # ---------------------------------------------------------------------------
-INITIAL_POP = 40                # baslangic karinca sayisi
-MIN_POP = 15                    # bu sayinin altina dusulurse takviye (15'ten artirildi)
-MAX_POP = 80                    # YUMUSAK ust sinir: normal teslimler bunun ustunde dogurmaz
-HARD_MAX_POP = 100              # KATI ust sinir: elit teslimler buraya kadar zorla dogurabilir;
+INITIAL_POP = 100               # baslangic karinca sayisi (40'tan; buyuyen dunya icin)
+MIN_POP = 40                    # bu sayinin altina dusulurse takviye
+MAX_POP = 200                   # YUMUSAK ust sinir: normal teslimler bunun ustunde dogurmaz
+HARD_MAX_POP = 250              # KATI ust sinir: elit teslimler buraya kadar zorla dogurabilir;
                                 # bu sayiya ulasilirsa en ESKI nesilden karincalar oldurulur
 # Ureme: yuvaya besin getiren HER karincadan, o karincanin genomundan
 # (mutasyonla) yavru dogar. NORMAL karinca 1 yavru; o anki EN IYI (yasayan
